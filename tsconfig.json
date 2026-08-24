@@ -15,7 +15,8 @@
   "files": [
     "src/extension.ts",
     "src/prefs.ts",
-    "src/tasksManager.ts"
+    "src/tasksManager.ts",
+    "src/textInteraction.ts"
   ],
   "include": [
     "src/ambient.d.ts"

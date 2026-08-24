@@ -1,15 +1,31 @@
 .tasks-list {
     spacing: 4px;
-    padding: 4px 4px 0 4px;
+    padding: 4px 0 0 0;
 }
 
 .task-box {
-    padding: 4px 0;
+    /* Left is 5px of padding on top of the 3px accent border, so 8px on the
+       right matches it visually and keeps the delete button off the edge. */
+    padding: 4px 8px 4px 5px;
     spacing: 12px;
+    border-left: 3px solid transparent;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .task-box-subtask {
     margin-left: 24px;
+}
+
+.task-box.task-box-subtask {
+    border-bottom: none;
+}
+
+.task-box-pending {
+    opacity: 0.6;
+}
+
+.task-box-locked {
+    opacity: 0.75;
 }
 
 .task-radio {
@@ -73,6 +89,9 @@
 
 .google-tasks-dialog-entry {
     min-width: 300px;
+    selection-background-color: #3584e4;
+    selected-color: #ffffff;
+    caret-color: #ffffff;
 }
 
 .task-edit-button {
@@ -134,4 +153,310 @@
 
 .tasks-completed-list {
     padding-top: 2px;
+}
+
+.google-tasks-section {
+    padding: 8px 12px;
+    spacing: 8px;
+    x_expand: true;
+    y_expand: true;
+}
+
+.google-tasks-box {
+    spacing: 8px;
+}
+
+.google-tasks-column {
+    x_expand: true;
+    y_expand: true;
+    /* Matches the column-width setting's own range; the real width is set
+       inline from that setting, so these only act as a floor and ceiling if the
+       inline style is ever missing. */
+    min-width: 300px;
+    max-width: 800px;
+    /* Symmetric: the left padding separates the content from the divider, and
+       without the matching right padding everything sat 16px off-centre. */
+    padding-left: 16px;
+    padding-right: 16px;
+    border-left: 1px solid rgb(255, 255, 255);
+}
+
+.google-tasks-empty-state-container {
+    spacing: 12px;
+}
+
+.google-tasks-empty-state-icon {
+    color: rgb(200, 200, 200);
+}
+
+.google-tasks-empty-state {
+    font-weight: 600;
+    color: rgb(200, 200, 200);
+    text-align: center;
+}
+
+.google-tasks-header {
+    font-size: 14px;
+    font-weight: 800;
+    padding: 8px 12px 4px 12px;
+    opacity: 0.9;
+    text-align: center;
+}
+
+.google-tasks-add-form {
+    spacing: 8px;
+    padding: 8px;
+    background-color: rgba(128, 128, 128, 0.1);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    transition-duration: 200ms;
+}
+
+.google-tasks-add-form-subtask {
+    margin-left: 24px;
+    background-color: rgba(100, 150, 200, 0.15);
+    border-left: 3px solid rgba(100, 150, 200, 0.5);
+}
+
+.google-tasks-subtask-label {
+    font-size: 11px;
+    font-style: italic;
+    opacity: 0.7;
+    padding: 2px 0;
+    color: rgba(100, 150, 200, 0.9);
+}
+
+.google-tasks-inline-entry {
+    min-width: 200px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background-color: rgba(128, 128, 128, 0.2);
+}
+
+.google-tasks-inline-entry:focus {
+    background-color: rgba(128, 128, 128, 0.3);
+    border-color: rgba(100, 150, 200, 0.6);
+}
+
+.google-tasks-form-buttons {
+    spacing: 8px;
+}
+
+.google-tasks-form-button {
+    padding: 6px 12px;
+    border-radius: 6px;
+    background-color: rgba(128, 128, 128, 0.2);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.google-tasks-form-button:hover {
+    background-color: rgba(128, 128, 128, 0.35);
+}
+
+.google-tasks-form-button-save {
+    background-color: rgba(100, 150, 200, 0.3);
+}
+
+.google-tasks-form-button-save:hover {
+    background-color: rgba(100, 150, 200, 0.45);
+}
+
+.task-text-box {
+    cursor: pointer;
+}
+
+.task-text-box:hover .task-label {
+    opacity: 0.85;
+}
+
+.task-text-box:hover .task-description {
+    opacity: 0.6;
+}
+
+/* Delete button */
+.task-delete-button {
+    border-radius: 6px;
+    width: 20px;
+    height: 20px;
+    opacity: 0.6;
+}
+
+.task-delete-button:hover {
+    opacity: 1;
+    background-color: rgba(224, 82, 82, 0.35);
+}
+
+/* Color swatch button + dot */
+.task-color-button {
+    border-radius: 6px;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+}
+
+.task-color-button:hover {
+    background-color: rgba(128, 128, 128, 0.3);
+}
+
+.task-expand-button {
+    border-radius: 6px;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    opacity: 0.7;
+}
+
+.task-expand-button:hover {
+    opacity: 1;
+    background-color: rgba(128, 128, 128, 0.3);
+}
+
+.task-color-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 99px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+.task-color-dot-none {
+    background-color: transparent;
+    border: 1px dashed rgba(255, 255, 255, 0.35);
+}
+
+.task-color-dot-red {
+    background-color: #e05252;
+}
+
+.task-color-dot-orange {
+    background-color: #e0964f;
+}
+
+.task-color-dot-yellow {
+    background-color: #dcc94a;
+}
+
+.task-color-dot-green {
+    background-color: #5cae6e;
+}
+
+.task-color-dot-blue {
+    background-color: #5b8fd9;
+}
+
+.task-color-dot-purple {
+    background-color: #9b6fd0;
+}
+
+/* Colored left-accent + translucent fill on the task row itself */
+.task-box-color-red {
+    border-left-color: #e05252;
+    background-color: rgba(224, 82, 82, 0.12);
+}
+
+.task-box-color-orange {
+    border-left-color: #e0964f;
+    background-color: rgba(224, 150, 79, 0.12);
+}
+
+.task-box-color-yellow {
+    border-left-color: #dcc94a;
+    background-color: rgba(220, 201, 74, 0.12);
+}
+
+.task-box-color-green {
+    border-left-color: #5cae6e;
+    background-color: rgba(92, 174, 110, 0.12);
+}
+
+.task-box-color-blue {
+    border-left-color: #5b8fd9;
+    background-color: rgba(91, 143, 217, 0.12);
+}
+
+.task-box-color-purple {
+    border-left-color: #9b6fd0;
+    background-color: rgba(155, 111, 208, 0.12);
+}
+
+/* Inline edit form tinted to match the row's color, but more transparent */
+.google-tasks-edit-form-color-red {
+    background-color: rgba(224, 82, 82, 0.08);
+    border-left: 3px solid rgba(224, 82, 82, 0.5);
+}
+
+.google-tasks-edit-form-color-orange {
+    background-color: rgba(224, 150, 79, 0.08);
+    border-left: 3px solid rgba(224, 150, 79, 0.5);
+}
+
+.google-tasks-edit-form-color-yellow {
+    background-color: rgba(220, 201, 74, 0.08);
+    border-left: 3px solid rgba(220, 201, 74, 0.5);
+}
+
+.google-tasks-edit-form-color-green {
+    background-color: rgba(92, 174, 110, 0.08);
+    border-left: 3px solid rgba(92, 174, 110, 0.5);
+}
+
+.google-tasks-edit-form-color-blue {
+    background-color: rgba(91, 143, 217, 0.08);
+    border-left: 3px solid rgba(91, 143, 217, 0.5);
+}
+
+.google-tasks-edit-form-color-purple {
+    background-color: rgba(155, 111, 208, 0.08);
+    border-left: 3px solid rgba(155, 111, 208, 0.5);
+}
+
+/* Inline edit form, nested under a subtask row */
+.google-tasks-edit-form-nested {
+    margin-left: 24px;
+}
+
+/* --- Copy/paste, selection and links ------------------------------------ */
+
+/* The action buttons and the timestamp share one strip at the end of a row,
+   stacked so the strip stays as wide as the wider of the two. */
+.task-actions {
+    /* Matches .task-box, so grouping the buttons doesn't pull them together. */
+    spacing: 12px;
+    padding-left: 12px;
+}
+
+/* The strip holding the buttons and the timestamp. No padding of its own —
+   the row's own 8px right padding is what sets the gap from the edge. */
+.task-trailing {
+    padding: 0;
+}
+
+.task-date {
+    font-style: italic;
+    opacity: 0.4;
+    text-align: right;
+}
+
+/* The description must never push past the row: one line, ellipsized. */
+.task-description {
+    max-width: 100%;
+}
+
+/* Selection colors for the task text. St.Label — unlike St.Entry — does not
+   feed these to its ClutterText on its own, so setupRichLabel() reads them
+   back from the theme node and applies them; without these rules a selection
+   is made but painted invisibly. */
+.task-label,
+.task-description,
+.google-tasks-header,
+.google-tasks-subtask-label,
+.google-tasks-empty-state {
+    selection-background-color: rgba(255, 255, 255, 0.16);
+    selected-color: rgb(240, 240, 240);
+}
+
+/* Right-click menu shown on the entries and on task text. Font size is left to
+   the shell theme so it matches every other menu in the popup. */
+.google-tasks-context-menu .popup-menu-content {
+    padding: 4px 0;
 }

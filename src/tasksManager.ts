@@ -14,6 +14,7 @@ export interface GoogleTask {
   parent?: string;
   due?: string;
   updated?: string;
+  completed?: string;
   position?: string;
   children?: GoogleTask[];
 }
@@ -23,13 +24,27 @@ export interface GoogleTaskList {
   title: string;
 }
 
-interface GoogleTasksResponse {
-  items?: GoogleTask[];
+interface PagedResponse<T> {
+  items?: T[];
+  nextPageToken?: string;
 }
 
-interface GoogleTaskListsResponse {
-  items?: GoogleTaskList[];
-}
+const TASKS_API = 'https://tasks.googleapis.com/tasks/v1';
+
+// The API returns 20 items per page by default and allows at most 100. Without
+// asking for the maximum and following nextPageToken, a list holding more than
+// 20 tasks is silently truncated.
+const PAGE_SIZE = 100;
+
+// Safety net against a nextPageToken that never clears: 20 pages is 2000 tasks,
+// well past anything this panel can usefully show.
+const MAX_PAGES = 20;
+
+// Access tokens are cached until shortly before they expire. Fetching one is an
+// IPC round-trip to GNOME Online Accounts, and it used to happen for every
+// single request — including once per task list on every refresh.
+const TOKEN_EXPIRY_MARGIN_SECONDS = 60;
+const TOKEN_FALLBACK_LIFETIME_SECONDS = 240;
 
 Gio._promisify(Goa.Client, 'new', 'new_finish');
 Gio._promisify(Goa.OAuth2Based.prototype, 'call_get_access_token', 'call_get_access_token_finish');
@@ -38,6 +53,8 @@ Gio._promisify(Soup.Session.prototype, 'send_and_read_async', 'send_and_read_fin
 export class GoogleTasksManager {
   private _cancellable: Gio.Cancellable;
   private _httpSession: Soup.Session;
+  private _accessToken: string | null = null;
+  private _accessTokenExpiresAtMs: number = 0;
 
   constructor() {
     this._cancellable = new Gio.Cancellable();
@@ -45,6 +62,9 @@ export class GoogleTasksManager {
   }
 
   private async _getAccessToken(): Promise<string> {
+    if (this._accessToken && Date.now() < this._accessTokenExpiresAtMs)
+      return this._accessToken;
+
     const client = await Goa.Client.new(this._cancellable);
     const accounts = client.get_accounts();
     const googleAccount = accounts.find((acc: any) => acc.get_account().provider_type === 'google');
@@ -53,169 +73,178 @@ export class GoogleTasksManager {
     const oauth2 = googleAccount.get_oauth2_based();
     if (!oauth2)
       throw new Error('Google account does not support OAuth2');
-    const [accessToken] = await oauth2.call_get_access_token(this._cancellable);
+
+    const [accessToken, expiresIn] = await oauth2.call_get_access_token(this._cancellable);
+    const lifetime = typeof expiresIn === 'number' && expiresIn > TOKEN_EXPIRY_MARGIN_SECONDS
+      ? expiresIn - TOKEN_EXPIRY_MARGIN_SECONDS
+      : TOKEN_FALLBACK_LIFETIME_SECONDS;
+
+    this._accessToken = accessToken;
+    this._accessTokenExpiresAtMs = Date.now() + lifetime * 1000;
     return accessToken;
   }
 
-  async getTaskLists(): Promise<GoogleTaskList[]> {
-    try {
-      const accessToken = await this._getAccessToken();
-
-      const listsUrl = 'https://tasks.googleapis.com/tasks/v1/users/@me/lists';
-      const listsData = await this._jsonRequest<GoogleTaskListsResponse>(listsUrl, accessToken);
-      return listsData.items ?? [];
-    }
-    catch (e) {
-      if (e instanceof GLib.Error && !e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-        console.error(`Google Tasks Error: ${e.message}`);
-      else if (e instanceof Error)
-        console.error(`Google Tasks Error: ${e.message}`);
-      return [];
-    }
+  private _invalidateAccessToken() {
+    this._accessToken = null;
+    this._accessTokenExpiresAtMs = 0;
   }
 
-  async getTasksForList(taskListId: string, includeCompleted: boolean = false): Promise<GoogleTask[]> {
-    try {
-      const accessToken = await this._getAccessToken();
+  /**
+   * Fetches task lists and all their tasks in one cycle: a single token fetch
+   * and a single lists request, rather than each caller re-fetching both.
+   *
+   * Failures propagate instead of resolving to empty arrays. An empty result
+   * and a failed request look identical to the caller otherwise, so a momentary
+   * network hiccup would blank the panel and the next refresh would fill it
+   * back in — which reads as tasks flickering in and out.
+   */
+  async getListsAndTasks(includeCompleted: boolean = false): Promise<{ lists: GoogleTaskList[]; tasks: GoogleTask[] }> {
+    const lists = await this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`);
 
-      const showCompletedParam = includeCompleted ? 'true' : 'false';
-      const tasksUrl = `https://tasks.googleapis.com/tasks/v1/lists/${taskListId}/tasks?showCompleted=${showCompletedParam}&showHidden=false`;
-      const tasksData = await this._jsonRequest<GoogleTasksResponse>(tasksUrl, accessToken);
-      return (tasksData.items ?? []).map(t => ({ ...t, taskListId }));
-    }
-    catch (e) {
-      if (e instanceof GLib.Error && !e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-        console.error(`Google Tasks Error: ${e.message}`);
-      else if (e instanceof Error)
-        console.error(`Google Tasks Error: ${e.message}`);
-      return [];
-    }
+    const showCompleted = includeCompleted ? 'true' : 'false';
+    const tasksByList = await Promise.all(lists.map(async (list) => {
+      // showHidden is intentionally always false: it surfaces tasks the user
+      // explicitly cleared from a completed list, not merely "completed".
+      const url = `${TASKS_API}/lists/${encodeURIComponent(list.id)}/tasks?showCompleted=${showCompleted}&showHidden=false`;
+      try {
+        const tasks = await this._fetchAllPages<GoogleTask>(url);
+        return tasks.map(task => ({ ...task, taskListId: list.id }));
+      }
+      catch (error) {
+        // One unreadable list shouldn't cost the user the others.
+        console.error(`Google Tasks: Failed to fetch tasks for list ${list.title}: ${describeError(error)}`);
+        return [] as GoogleTask[];
+      }
+    }));
+
+    return { lists, tasks: tasksByList.flat() };
   }
 
-  async getTasks(includeCompleted: boolean = false): Promise<GoogleTask[]> {
-    try {
-      const accessToken = await this._getAccessToken();
-
-      // Get Task Lists
-      const listsUrl = 'https://tasks.googleapis.com/tasks/v1/users/@me/lists';
-      const listsData = await this._jsonRequest<GoogleTaskListsResponse>(listsUrl, accessToken);
-
-      const lists = listsData.items ?? [];
-      const showCompletedParam = includeCompleted ? 'true' : 'false';
-      const tasksByList = await Promise.all(lists.map(async (list) => {
-        const tasksUrl = `https://tasks.googleapis.com/tasks/v1/lists/${list.id}/tasks?showCompleted=${showCompletedParam}&showHidden=false`;
-        try {
-          const tasksData = await this._jsonRequest<GoogleTasksResponse>(tasksUrl, accessToken);
-          return (tasksData.items ?? []).map(t => ({ ...t, taskListId: list.id }));
-        }
-        catch (error) {
-          console.error(`Google Tasks: Failed to fetch tasks for list ${list.title}: ${error instanceof Error ? error.message : String(error)}`);
-          return [] as GoogleTask[];
-        }
-      }));
-      return tasksByList.flat();
+  async createTask(title: string, notes?: string, taskListId?: string, parentTaskId?: string): Promise<GoogleTask> {
+    let resolvedTaskListId = taskListId;
+    if (!resolvedTaskListId) {
+      const lists = await this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`);
+      if (lists.length === 0)
+        throw new Error('No task lists found');
+      resolvedTaskListId = lists[0].id;
     }
-    catch (e) {
-      if (e instanceof GLib.Error && !e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED)) {
-        console.error(`Google Tasks Error: ${e.message}`);
-      }
-      else if (e instanceof Error) {
-        console.error(`Google Tasks Error: ${e.message}`);
-      }
-      return [];
-    }
-  }
 
-  async createTask(title: string, notes?: string, taskListId?: string, parentTaskId?: string): Promise<void> {
-    try {
-      const accessToken = await this._getAccessToken();
+    const parentParam = parentTaskId ? `?parent=${encodeURIComponent(parentTaskId)}` : '';
+    const url = `${TASKS_API}/lists/${encodeURIComponent(resolvedTaskListId)}/tasks${parentParam}`;
+    const body: Record<string, string> = { title };
+    if (notes)
+      body.notes = notes;
 
-      let resolvedTaskListId = taskListId;
-      if (!resolvedTaskListId) {
-        // Fallback to the first task list
-        const listsUrl = 'https://tasks.googleapis.com/tasks/v1/users/@me/lists';
-        const listsData = await this._jsonRequest<GoogleTaskListsResponse>(listsUrl, accessToken);
-        if (!listsData.items || listsData.items.length === 0)
-          throw new Error('No task lists found');
-
-        resolvedTaskListId = listsData.items[0].id;
-      }
-
-      const parentParam = parentTaskId ? `?parent=${encodeURIComponent(parentTaskId)}` : '';
-      const url = `https://tasks.googleapis.com/tasks/v1/lists/${resolvedTaskListId}/tasks${parentParam}`;
-      const body: Record<string, string> = { title };
-      if (notes)
-        body.notes = notes;
-      await this._jsonRequest(url, accessToken, 'POST', body);
-    }
-    catch (e) {
-      console.error(`Google Tasks: Failed to create task: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    const created = await this._request<GoogleTask>(url, 'POST', body);
+    return { ...created, taskListId: resolvedTaskListId };
   }
 
   async completeTask(taskListId: string, taskId: string): Promise<void> {
-    try {
-      const accessToken = await this._getAccessToken();
-
-      const url = `https://tasks.googleapis.com/tasks/v1/lists/${taskListId}/tasks/${taskId}`;
-      await this._jsonRequest(url, accessToken, 'PATCH', { status: 'completed' });
-    }
-    catch (e) {
-      console.error(`Google Tasks: Failed to complete task: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    await this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status: 'completed' });
   }
 
   async uncompleteTask(taskListId: string, taskId: string): Promise<void> {
-    try {
-      const accessToken = await this._getAccessToken();
-
-      const url = `https://tasks.googleapis.com/tasks/v1/lists/${taskListId}/tasks/${taskId}`;
-      await this._jsonRequest(url, accessToken, 'PATCH', { status: 'needsAction' });
-    }
-    catch (e) {
-      console.error(`Google Tasks: Failed to mark task as unfinished: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    await this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status: 'needsAction' });
   }
 
   async updateTask(taskListId: string, taskId: string, title: string, notes?: string): Promise<void> {
-    try {
-      const accessToken = await this._getAccessToken();
-
-      const url = `https://tasks.googleapis.com/tasks/v1/lists/${taskListId}/tasks/${taskId}`;
-      const body: Record<string, string> = { title };
-      if (notes !== undefined)
-        body.notes = notes;
-      await this._jsonRequest(url, accessToken, 'PATCH', body);
-    }
-    catch (e) {
-      console.error(`Google Tasks: Failed to update task: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    const body: Record<string, string> = { title };
+    if (notes !== undefined)
+      body.notes = notes;
+    await this._request(this._taskUrl(taskListId, taskId), 'PATCH', body);
   }
 
-  async _jsonRequest<T>(url: string, token: string, method: string = 'GET', body?: object): Promise<T> {
+  async deleteTask(taskListId: string, taskId: string): Promise<void> {
+    await this._request(this._taskUrl(taskListId, taskId), 'DELETE');
+  }
+
+  private _taskUrl(taskListId: string, taskId: string): string {
+    return `${TASKS_API}/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`;
+  }
+
+  private async _fetchAllPages<T>(url: string): Promise<T[]> {
+    const separator = url.includes('?') ? '&' : '?';
+    const items: T[] = [];
+    let pageToken: string | undefined;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const tokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
+      const data = await this._request<PagedResponse<T>>(`${url}${separator}maxResults=${PAGE_SIZE}${tokenParam}`);
+
+      if (data?.items)
+        items.push(...data.items);
+
+      pageToken = data?.nextPageToken;
+      if (!pageToken)
+        break;
+    }
+
+    return items;
+  }
+
+  private async _request<T>(url: string, method: string = 'GET', body?: object): Promise<T> {
+    const response = await this._send<T>(url, method, body, await this._getAccessToken());
+    if (response.status !== 401)
+      return response.result;
+
+    // A cached token can expire early, or be revoked outright, so a single
+    // unauthorized reply earns a fresh token and one retry before giving up.
+    this._invalidateAccessToken();
+    const retry = await this._send<T>(url, method, body, await this._getAccessToken());
+    if (retry.status === 401)
+      throw new Error(`HTTP 401: Unauthorized (${method} ${url})`);
+    return retry.result;
+  }
+
+  private async _send<T>(url: string, method: string, body: object | undefined, token: string): Promise<{ status: number; result: T }> {
     const message = Soup.Message.new(method, url);
     message.request_headers.append('Authorization', `Bearer ${token}`);
 
     if (body) {
-      const bodyStr = JSON.stringify(body);
-      const bytes = GLib.Bytes.new(new TextEncoder().encode(bodyStr));
+      const bytes = GLib.Bytes.new(new TextEncoder().encode(JSON.stringify(body)));
       message.set_request_body_from_bytes('application/json', bytes);
     }
 
     const responseBytes = await this._httpSession.send_and_read_async(message, GLib.PRIORITY_DEFAULT, this._cancellable);
     const status = message.get_status();
-    if (status !== 200) {
-      throw new Error(`HTTP ${status}: ${message.get_reason_phrase()}`);
-    }
-    const data = responseBytes.get_data();
-    if (!data)
-      throw new Error('No data received');
+    const data = responseBytes?.get_data();
+    const text = data && data.length > 0 ? new TextDecoder().decode(data) : '';
 
-    const responseBody = new TextDecoder().decode(data);
-    return JSON.parse(responseBody) as T;
+    // Any 2xx counts. Accepting only 200 and 204 left 201 Created — and every
+    // other 2xx the API may return — looking like a failure even though the
+    // write had gone through.
+    if (status < 200 || status >= 300) {
+      if (status === 401)
+        return { status, result: undefined as T };
+      // Google explains itself in the response body: quota exceeded, invalid
+      // id, and so on. Carrying it along turns a bare "HTTP 400" in the journal
+      // into something actionable.
+      throw new Error(`HTTP ${status}: ${message.get_reason_phrase()}${text ? ` — ${text.slice(0, 300)}` : ''}`);
+    }
+
+    if (!text)
+      return { status, result: undefined as T };
+
+    try {
+      return { status, result: JSON.parse(text) as T };
+    }
+    catch {
+      throw new Error(`Unreadable response from ${method} ${url}`);
+    }
   }
 
   destroy() {
+    this._invalidateAccessToken();
     this._cancellable.cancel();
   }
+}
+
+export function isCancelledError(error: unknown): boolean {
+  return error instanceof GLib.Error && error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
+}
+
+function describeError(error: unknown): string {
+  if (isCancelledError(error))
+    return 'cancelled';
+  return error instanceof Error ? error.message : String(error);
 }

@@ -4,9 +4,11 @@
 
 # Google Tasks for Gnome
 
-![Gnome Extensions Downloads](https://img.shields.io/gnome-extensions/dt/googletasks%40ztluwu.dev?color=57a8ff) ![GitHub Release](https://img.shields.io/github/v/release/ZTL-UwU/gnome-shell-google-tasks?color=52d794)
+![GitHub Release](https://img.shields.io/github/v/release/boleeinoe/gnome-shell-google-tasks?color=52d794)
 
 A Gnome shell extension to manage your [Google Tasks](https://tasks.google.com) directly from a notification panel widget. _This extension is not affiliated, funded, or in any way associated with Google._
+
+This is a fork of [ZTL-UwU/gnome-shell-google-tasks](https://github.com/ZTL-UwU/gnome-shell-google-tasks), published separately under its own extension id (`googletasks@boleeinoe.github.io`) so it doesn't collide with the original on a machine that has both installed.
 
 ## Installation
 
@@ -16,7 +18,11 @@ A Gnome shell extension to manage your [Google Tasks](https://tasks.google.com) 
 - openSUSE: `sudo zypper install typelib-1_0-Goa-1_0`
 - Arch-based: works out of the box
 
-[<img width="200" src="https://github.com/andyholmes/gnome-shell-extensions-badge/raw/master/get-it-on-ego.png" alt="Get it on GNOME Extensions">](https://extensions.gnome.org/extension/9322/google-tasks/)
+<!--
+Once this fork is published on extensions.gnome.org, replace this comment
+with the "Get it on GNOME Extensions" badge linking to its own listing page.
+-->
+Not yet published on extensions.gnome.org — install from source (below) for now.
 
 ## Usage
 
@@ -32,7 +38,7 @@ A Gnome shell extension to manage your [Google Tasks](https://tasks.google.com) 
 ### Setup & build
 
 ```sh
-git clone https://github.com/ZTL-UwU/gnome-shell-google-tasks.git
+git clone https://github.com/boleeinoe/gnome-shell-google-tasks.git
 cd gnome-shell-google-tasks
 bun install       # optional; `make` will install if needed
 make              # compiles TypeScript and copies assets into dist/
@@ -44,7 +50,7 @@ make              # compiles TypeScript and copies assets into dist/
 ### Local install & testing
 
 ```sh
-make install      # builds, packs googletasks@ztluwu.dev.zip, installs with gnome-extensions
+make install      # builds, packs googletasks@boleeinoe.github.io.zip, installs with gnome-extensions
 ```
 
 Restart the shell (**Alt+F2**, type `restart`, Enter) so changes load. Use **Extensions** to enable or disable `Google Tasks`.
@@ -55,7 +61,7 @@ Restart the shell (**Alt+F2**, type `restart`, Enter) so changes load. Use **Ext
 make clean && make pack
 ```
 
-This produces `googletasks@ztluwu.dev.zip` in the project root — upload this to [extensions.gnome.org](https://extensions.gnome.org) or distribute manually.
+This produces `googletasks@boleeinoe.github.io.zip` in the project root — upload this to [extensions.gnome.org](https://extensions.gnome.org) or distribute manually.
 
 ### Clean build artifacts
 
@@ -65,8 +71,4 @@ make clean        # removes dist/, node_modules/, and the zip
 
 ## License
 
-[MIT](https://github.com/ZTL-UwU/gnome-shell-google-tasks/blob/main/LICENSE)
-
----
-
-<a href='https://ko-fi.com/T6T7R1M58' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi3.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
+[MIT](https://github.com/boleeinoe/gnome-shell-google-tasks/blob/main/LICENSE) — originally by [Tony Zhang](https://github.com/ZTL-UwU).

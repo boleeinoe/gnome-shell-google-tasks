@@ -1,4 +1,4 @@
-UUID = googletasks@ztluwu.dev
+UUID = googletasks@boleeinoe.github.io
 SCHEMA_XML = schemas/org.gnome.shell.extensions.googletasks.gschema.xml
 DIST_SCHEMA_XML = dist/schemas/org.gnome.shell.extensions.googletasks.gschema.xml
 DIST_ASSETS = dist/metadata.json dist/stylesheet.css $(DIST_SCHEMA_XML)

@@ -1,15 +1,12 @@
 {
-  "uuid": "googletasks@ztluwu.dev",
+  "uuid": "googletasks@boleeinoe.github.io",
   "name": "Google Tasks",
   "description": "A Google Tasks widget in the notification center. This extension is not affiliated, funded, or in any way associated with Google.",
-  "url": "https://github.com/ZTL-UwU/gnome-shell-google-tasks",
+  "url": "https://github.com/boleeinoe/gnome-shell-google-tasks",
   "shell-version": [
     "49",
     "50"
   ],
   "settings-schema": "org.gnome.shell.extensions.googletasks",
-  "version": 7,
-  "donations": {
-    "kofi": "ztl_uwu"
-  }
+  "version": 1
 }

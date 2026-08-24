@@ -15,6 +15,11 @@
     <value value="3" nick="this-month"/>
   </enum>
 
+  <enum id="org.gnome.shell.extensions.googletasks.Language">
+    <value value="0" nick="en"/>
+    <value value="1" nick="ru"/>
+  </enum>
+
   <schema id="org.gnome.shell.extensions.googletasks" path="/org/gnome/shell/extensions/googletasks/">
     <key name="refresh-interval" type="i">
       <default>20</default>
@@ -27,6 +32,11 @@
       <summary>Task sort order</summary>
       <description>How tasks are sorted in the panel.</description>
     </key>
+    <key name="show-task-date" type="b">
+      <default>true</default>
+      <summary>Show task date</summary>
+      <description>Whether to show, next to each task title, when the task was created — or, in the completed section, when it was completed.</description>
+    </key>
     <key name="show-completed-tasks" type="b">
       <default>true</default>
       <summary>Show completed tasks section</summary>
@@ -36,6 +46,82 @@
       <default>'all'</default>
       <summary>Task display timeframe</summary>
       <description>Which due date range to display in the panel.</description>
+    </key>
+    <key name="language" enum="org.gnome.shell.extensions.googletasks.Language">
+      <default>'en'</default>
+      <summary>Interface language</summary>
+      <description>Language used for the extension's own UI text (labels, buttons, placeholder messages). Does not affect task content itself.</description>
+    </key>
+    <key name="column-width" type="i">
+      <default>520</default>
+      <range min="300" max="800"/>
+      <summary>Column width</summary>
+      <description>Width in pixels of the Google Tasks column in the calendar popup.</description>
+    </key>
+    <key name="corner-radius" type="i">
+      <default>6</default>
+      <range min="0" max="24"/>
+      <summary>Corner radius</summary>
+      <description>Corner rounding in pixels for colored task rows and their edit form.</description>
+    </key>
+    <key name="completed-retention-minutes" type="i">
+      <default>0</default>
+      <range min="0" max="43200"/>
+      <summary>Completed task retention (minutes)</summary>
+      <description>Automatically delete completed tasks this many minutes after completion. 0 disables auto-deletion.</description>
+    </key>
+    <key name="title-font-size" type="i">
+      <default>14</default>
+      <range min="8" max="24"/>
+      <summary>Task title font size</summary>
+      <description>Font size in pixels for task and subtask titles.</description>
+    </key>
+    <key name="description-font-size" type="i">
+      <default>11</default>
+      <range min="8" max="20"/>
+      <summary>Task description font size</summary>
+      <description>Font size in pixels for task and subtask descriptions.</description>
+    </key>
+    <key name="task-block-size" type="i">
+      <default>4</default>
+      <range min="0" max="16"/>
+      <summary>Task block size</summary>
+      <description>Vertical padding in pixels for top-level task rows.</description>
+    </key>
+    <key name="subtask-block-size" type="i">
+      <default>4</default>
+      <range min="0" max="16"/>
+      <summary>Subtask block size</summary>
+      <description>Vertical padding in pixels for subtask rows.</description>
+    </key>
+    <key name="radio-size" type="i">
+      <default>12</default>
+      <range min="8" max="24"/>
+      <summary>Checkmark circle size</summary>
+      <description>Width and height in pixels of the completion circle for leaf tasks and subtasks.</description>
+    </key>
+    <key name="empty-state-icon" type="s">
+      <default>'view-list-symbolic'</default>
+      <summary>Empty state icon</summary>
+      <description>Symbolic icon name shown above the "no tasks" placeholder message.</description>
+    </key>
+    <key name="empty-state-icon-size" type="i">
+      <default>64</default>
+      <range min="24" max="128"/>
+      <summary>Empty state icon size</summary>
+      <description>Size in pixels of the icon shown above the "no tasks" placeholder message.</description>
+    </key>
+    <key name="empty-state-font-size" type="i">
+      <default>14</default>
+      <range min="8" max="24"/>
+      <summary>Empty state text size</summary>
+      <description>Font size in pixels of the "no tasks" placeholder message.</description>
+    </key>
+    <key name="empty-state-opacity" type="i">
+      <default>50</default>
+      <range min="10" max="100"/>
+      <summary>Empty state opacity</summary>
+      <description>Opacity percentage applied to both the icon and text of the "no tasks" placeholder.</description>
     </key>
   </schema>
 </schemalist>
