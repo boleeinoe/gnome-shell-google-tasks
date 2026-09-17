@@ -178,37 +178,6 @@ const MAX_DEPTH_THAT_CAN_ADD_SUBTASKS = 1;
 // edit/delete/color/complete controls, since those would need a real task id.
 const PENDING_TASK_ID_PREFIX = '__pending_';
 
-// How long to trust a status we just set locally over what a reconcile fetch
-// reports, if they disagree. Google's API can briefly return the pre-change
-// status right after a successful write (eventual consistency) — without this,
-// a reconcile landing in that window flips the task back, then a later
-// reconcile flips it forward again once the read catches up, which looked like
-// the row bouncing between Completed and active on its own.
-const STATUS_OVERRIDE_TTL_MS = 30000;
-
-function delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Retries a failing network call a few times with backoff before giving up.
-// Transient failures (dropped connections, momentary TLS handshake errors —
-// exactly what shows up in the logs) were previously treated as permanent,
-// triggering an immediate full refetch that rolled the optimistic UI back.
-async function withRetry<T>(fn: () => Promise<T>, retries = 2, baseDelayMs = 200): Promise<T> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-            return await fn();
-        }
-        catch (e) {
-            lastError = e;
-            if (attempt < retries)
-                await delay(baseDelayMs * (attempt + 1));
-        }
-    }
-    throw lastError;
-}
-
 // Corner rounding for a task row's colored background (and its matching inline
 // edit form), used as a fallback before settings are available and as the
 // GSettings default. The live value comes from the 'corner-radius' key via
@@ -1637,14 +1606,6 @@ export default class GoogleTasksExtension extends Extension {
     private _pendingMutations: number = 0;
     private _reconcileTimerId: number | null = null;
     private _renderOnlyTimerId: number | null = null;
-    private _taskMutationQueues: Map<string, Promise<unknown>> = new Map();
-    private _pendingStatusOverrides: Map<string, { status: string; expiresAt: number }> = new Map();
-
-    // Ids deleted locally that the server may still hand back: Google's read
-    // replicas lag behind writes, so a refresh landing right after a delete
-    // resurrects the row and the next one removes it again. An entry is dropped
-    // as soon as a fetch stops mentioning the id, or after the TTL.
-    private _pendingDeletions: Map<string, number> = new Map();
 
     // Explicit, so TypeScript doesn't synthesise one that forwards through
     // `arguments`. Extension is a plain class, unlike the GObject section
@@ -1880,8 +1841,13 @@ export default class GoogleTasksExtension extends Extension {
             changed = true;
         }
 
+        // A task pending deletion (tombstoned in GoogleTasksManager, but the
+        // server hasn't caught up yet) is filtered out of allTasks the same as
+        // a genuinely-gone one, so its creation-time record is dropped a
+        // little early here. Harmless: the row is already hidden locally, and
+        // a failed delete's rollback just re-adds the record on the next sync.
         for (const id of [...this._taskCreationTimes.keys()]) {
-            if (!liveIds.has(id) && !this._pendingDeletions.has(id)) {
+            if (!liveIds.has(id)) {
                 this._taskCreationTimes.delete(id);
                 changed = true;
             }
@@ -2117,7 +2083,7 @@ export default class GoogleTasksExtension extends Extension {
 
         this._pendingMutations++;
         try {
-            const created = await withRetry(() => this._tasksManager!.createTask(title, description || undefined, resolvedListId, parentTaskId));
+            const created = await this._tasksManager!.createTask(title, description || undefined, resolvedListId, parentTaskId);
 
             const list = this._activeTasksByListId.get(resolvedListId);
             if (list) {
@@ -2255,24 +2221,6 @@ export default class GoogleTasksExtension extends Extension {
         this._tasksSection.finishRender();
     }
 
-    // Runs a network mutation for a given task id strictly after any earlier
-    // still-in-flight mutation for that SAME task id has settled — never
-    // concurrently. Without this, quickly flipping a task between active and
-    // completed fires a completeTask and an uncompleteTask request in parallel;
-    // if their responses arrive out of send-order, the server ends up in the
-    // state opposite of the user's last click, and the next background
-    // reconcile then visibly "rolls back" what looked like a successful action.
-    // Each call also retries on failure (see withRetry) instead of giving up
-    // after one attempt.
-    _runTaskMutation<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
-        const previous = this._taskMutationQueues.get(taskId) ?? Promise.resolve();
-        const run = previous.then(() => withRetry(fn), () => withRetry(fn));
-        // Keep the queue alive regardless of outcome, so a later action on this
-        // same task still waits its turn instead of racing ahead of this one.
-        this._taskMutationQueues.set(taskId, run.catch(() => undefined));
-        return run;
-    }
-
     // Coalesces a burst of actions (e.g. completing/coloring/deleting several
     // tasks quickly) into a single background refresh instead of firing one per
     // action — each optimistic local update still renders immediately, this only
@@ -2325,7 +2273,7 @@ export default class GoogleTasksExtension extends Extension {
                 tasks.splice(i, 1);
 
                 this._pendingMutations++;
-                this._runTaskMutation(task.id, () => this._tasksManager!.deleteTask(listId, task.id))
+                this._tasksManager!.deleteTask(listId, task.id)
                     .catch((e) => {
                         if (!isCancelledError(e))
                             console.error(`Google Tasks: Failed to auto-delete expired completed task: ${e instanceof Error ? e.message : String(e)}`);
@@ -2367,58 +2315,18 @@ export default class GoogleTasksExtension extends Extension {
             this._activeTasksByListId = new Map(taskLists.map(list => [list.id, []] as [string, GoogleTask[]]));
             this._completedTasksByListId = new Map(taskLists.map(list => [list.id, []] as [string, GoogleTask[]]));
 
-            const nowMs = Date.now();
-            for (const [id, expiresAt] of this._pendingDeletions) {
-                if (nowMs > expiresAt)
-                    this._pendingDeletions.delete(id);
-            }
-            if (this._pendingDeletions.size > 0) {
-                const seenIds = new Set<string>();
-                for (const fetched of allTasks)
-                    seenIds.add(fetched.id);
-                for (const id of [...this._pendingDeletions.keys()]) {
-                    if (!seenIds.has(id))
-                        this._pendingDeletions.delete(id);
-                }
-            }
-
             if (this._syncTaskCreationTimes(allTasks))
                 this._saveTaskCreationTimes();
 
+            // allTasks has already been reconciled against optimistic writes
+            // still in flight — see GoogleTasksManager.getListsAndTasks() —
+            // so a status here is exactly what should be rendered right now.
             for (const task of allTasks) {
                 if (!task.taskListId)
                     continue;
-                if (this._pendingDeletions.has(task.id))
-                    continue;
 
-                let effectiveStatus = task.status;
-                const override = this._pendingStatusOverrides.get(task.id);
-                if (override) {
-                    if (Date.now() > override.expiresAt) {
-                        this._pendingStatusOverrides.delete(task.id);
-                    }
-                    else if (task.status !== override.status) {
-                        // The fetch disagrees with what we just set — likely a
-                        // stale (not-yet-replicated) read. Trust our own recent
-                        // action instead of visibly flipping the row back.
-                        effectiveStatus = override.status;
-                    }
-                    else {
-                        // The fetch now agrees — the server has caught up.
-                        this._pendingStatusOverrides.delete(task.id);
-                    }
-                }
-
-                if (effectiveStatus === 'completed') {
-                    const completedListTasks = this._completedTasksByListId.get(task.taskListId);
-                    if (completedListTasks)
-                        completedListTasks.push(effectiveStatus === task.status ? task : { ...task, status: effectiveStatus });
-                }
-                else {
-                    const activeListTasks = this._activeTasksByListId.get(task.taskListId);
-                    if (activeListTasks)
-                        activeListTasks.push(effectiveStatus === task.status ? task : { ...task, status: effectiveStatus });
-                }
+                const bucket = task.status === 'completed' ? this._completedTasksByListId : this._activeTasksByListId;
+                bucket.get(task.taskListId)?.push(task);
             }
 
             this._pruneExpiredCompletedTasks();
@@ -2821,7 +2729,7 @@ export default class GoogleTasksExtension extends Extension {
         this._renderCurrentTaskList();
 
         this._pendingMutations++;
-        this._runTaskMutation(task.id, () => this._tasksManager!.updateTask(taskListId, task.id, title, notes))
+        this._tasksManager!.updateTask(taskListId, task.id, title, notes)
             .then(() => this._scheduleReconcile())
             .catch((e) => {
                 if (isCancelledError(e))
@@ -2856,10 +2764,9 @@ export default class GoogleTasksExtension extends Extension {
         // Move it locally and re-render right away — the previous version waited
         // for the completeTask() network round trip, then a *second* full
         // getTaskLists+getTasks refetch on a 50ms delay, which is what made
-        // completing a task feel slow.
-        const expiresAt = Date.now() + STATUS_OVERRIDE_TTL_MS;
+        // completing a task feel slow. GoogleTasksManager.completeTask() tracks
+        // its own optimistic status override for the reconcile that follows.
         for (const id of idsToComplete) {
-            this._pendingStatusOverrides.set(id, { status: 'completed', expiresAt });
             const index = activeTasks.findIndex(t => t.id === id);
             if (index >= 0) {
                 const [moved] = activeTasks.splice(index, 1);
@@ -2870,17 +2777,15 @@ export default class GoogleTasksExtension extends Extension {
         this._renderCurrentTaskList();
 
         this._pendingMutations++;
-        Promise.all(idsToComplete.map(id => this._runTaskMutation(id, () => this._tasksManager!.completeTask(taskListId, id))))
+        Promise.all(idsToComplete.map(id => this._tasksManager!.completeTask(taskListId, id)))
             .then(() => this._scheduleReconcile())
             .catch((e) => {
                 if (isCancelledError(e))
                     return;
                 console.error(`Google Tasks: Failed to mark task completed: ${e instanceof Error ? e.message : String(e)}`);
-                // Drop the optimistic state instead of letting it stand until
-                // its TTL: otherwise a failed move looks like it worked, then
-                // silently undoes itself half a minute later.
-                for (const id of idsToComplete)
-                    this._pendingStatusOverrides.delete(id);
+                // completeTask() has already rolled back its own optimistic
+                // override for whichever id(s) failed; refresh to re-sync the
+                // local render with that.
                 this._refreshTasks();
             })
             .finally(() => {
@@ -2911,8 +2816,6 @@ export default class GoogleTasksExtension extends Extension {
                 completedTasks.splice(taskIndex, 1);
         }
 
-        this._pendingStatusOverrides.set(task.id, { status: 'needsAction', expiresAt: Date.now() + STATUS_OVERRIDE_TTL_MS });
-
         const activeTasks = this._activeTasksByListId.get(taskListId);
         if (activeTasks)
             activeTasks.push({ ...task, status: 'needsAction' });
@@ -2924,14 +2827,15 @@ export default class GoogleTasksExtension extends Extension {
 
         try {
             this._pendingMutations++;
-            await this._runTaskMutation(task.id, () => this._tasksManager!.uncompleteTask(taskListId, task.id));
+            // uncompleteTask() tracks its own optimistic status override for
+            // the reconcile that follows.
+            await this._tasksManager.uncompleteTask(taskListId, task.id);
             this._scheduleReconcile();
         }
         catch (e) {
             if (isCancelledError(e))
                 return;
             console.error(`Google Tasks: Failed to mark task unfinished: ${e instanceof Error ? e.message : String(e)}`);
-            this._pendingStatusOverrides.delete(task.id);
             this._refreshTasks();
         }
         finally {
@@ -2963,25 +2867,20 @@ export default class GoogleTasksExtension extends Extension {
         };
         removeMatching(activeTasks);
         removeMatching(completedTasks);
-        const deletionExpiresAt = Date.now() + STATUS_OVERRIDE_TTL_MS;
-        for (const id of idsToDelete) {
-            this._pendingStatusOverrides.delete(id);
-            this._pendingDeletions.set(id, deletionExpiresAt);
-        }
         // Any refresh in flight predates this delete and still believes the
         // task exists — make its response stale.
         this._refreshRequestSeq++;
         this._renderCurrentTaskList();
 
         this._pendingMutations++;
-        Promise.all(Array.from(idsToDelete).map(id => this._runTaskMutation(id, () => this._tasksManager!.deleteTask(taskListId, id))))
+        // deleteTask() tracks its own pending-deletion tombstone for the
+        // reconcile that follows.
+        Promise.all(Array.from(idsToDelete).map(id => this._tasksManager!.deleteTask(taskListId, id)))
             .then(() => this._scheduleReconcile())
             .catch((e) => {
                 if (isCancelledError(e))
                     return;
                 console.error(`Google Tasks: Failed to delete task: ${e instanceof Error ? e.message : String(e)}`);
-                for (const id of idsToDelete)
-                    this._pendingDeletions.delete(id);
                 this._refreshTasks();
             })
             .finally(() => {
@@ -2994,8 +2893,6 @@ export default class GoogleTasksExtension extends Extension {
         setOnContextMenuClosed(null);
         this._lastRenderSignature = null;
         this._renderDeferred = false;
-        this._pendingDeletions.clear();
-        this._pendingStatusOverrides.clear();
         this._taskCreationTimes.clear();
 
         if (this._menuBoxLayout && this._menuBoxOrientation !== null) {
@@ -3016,7 +2913,6 @@ export default class GoogleTasksExtension extends Extension {
             GLib.source_remove(this._renderOnlyTimerId);
             this._renderOnlyTimerId = null;
         }
-        this._taskMutationQueues.clear();
 
         if (this._settings && this._settingsChangedId !== null) {
             this._settings.disconnect(this._settingsChangedId);
