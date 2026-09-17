@@ -99,6 +99,14 @@ export class GoogleTasksManager {
   private _statusOverrides: Map<string, { status: string; expiresAt: number }> = new Map();
   private _pendingDeletions: Map<string, number> = new Map();
 
+  // A task just created here can be temporarily missing from a fetch — the
+  // same read-replica lag that motivates _statusOverrides/_pendingDeletions
+  // — which otherwise makes it flicker: shown optimistically, then dropped
+  // by the next reconcile (which rebuilds its list purely from the fetch),
+  // then restored once a later fetch catches up. Held onto until the fetch
+  // agrees or the entry lapses.
+  private _recentlyCreated: Map<string, { task: GoogleTask; expiresAt: number }> = new Map();
+
   // Serializes mutations per task id: without this, quickly flipping a task
   // between active and completed fires a completeTask and an uncompleteTask
   // request in parallel, and if their responses arrive out of send-order the
@@ -173,14 +181,16 @@ export class GoogleTasksManager {
 
   // Applies locally-known optimistic state on top of a fresh fetch: a status
   // just set by completeTask/uncompleteTask takes precedence over a fetch
-  // that still disagrees, and a task just removed by deleteTask stays hidden
-  // until the fetch stops mentioning it or the override lapses.
+  // that still disagrees, a task just removed by deleteTask stays hidden
+  // until the fetch stops mentioning it or the override lapses, and a task
+  // just made by createTask stays visible even if this particular fetch
+  // doesn't have it yet.
   private _reconcile(tasks: GoogleTask[]): GoogleTask[] {
     // The common case: nothing was mutated since the last fetch, so there's
     // nothing to reconcile. Skip the sweeps and the full-array rebuild below
     // — this runs on every poll (every REFRESH_INTERVAL_SECONDS), not just
     // right after a mutation.
-    if (this._statusOverrides.size === 0 && this._pendingDeletions.size === 0)
+    if (this._statusOverrides.size === 0 && this._pendingDeletions.size === 0 && this._recentlyCreated.size === 0)
       return tasks;
 
     const now = Date.now();
@@ -189,16 +199,34 @@ export class GoogleTasksManager {
       if (now > expiresAt)
         this._pendingDeletions.delete(id);
     }
-    if (this._pendingDeletions.size > 0) {
+    for (const [id, entry] of this._recentlyCreated) {
+      if (now > entry.expiresAt)
+        this._recentlyCreated.delete(id);
+    }
+    if (this._pendingDeletions.size > 0 || this._recentlyCreated.size > 0) {
       const seenIds = new Set(tasks.map(task => task.id));
       for (const id of [...this._pendingDeletions.keys()]) {
         if (!seenIds.has(id))
           this._pendingDeletions.delete(id);
       }
+      // Seen for real now — the fetched copy (any later edits included)
+      // takes over, so this stops shadowing it.
+      for (const id of [...this._recentlyCreated.keys()]) {
+        if (seenIds.has(id))
+          this._recentlyCreated.delete(id);
+      }
     }
 
+    // A still-unseen just-created task isn't in `tasks` at all — fold it in
+    // here so the loop below applies the exact same deletion/status handling
+    // to it as to a fetched task (e.g. it was created and then immediately
+    // completed or deleted before any fetch caught up).
+    const candidates = this._recentlyCreated.size > 0
+      ? [...tasks, ...[...this._recentlyCreated.values()].map(entry => entry.task)]
+      : tasks;
+
     const reconciled: GoogleTask[] = [];
-    for (const task of tasks) {
+    for (const task of candidates) {
       if (this._pendingDeletions.has(task.id))
         continue;
 
@@ -244,7 +272,9 @@ export class GoogleTasksManager {
         body.notes = notes;
 
       const created = await this._request<GoogleTask>(url, 'POST', body);
-      return { ...created, taskListId: resolvedTaskListId };
+      const task = { ...created, taskListId: resolvedTaskListId };
+      this._recentlyCreated.set(task.id, { task, expiresAt: Date.now() + RECONCILE_OVERRIDE_TTL_MS });
+      return task;
     });
   }
 
@@ -281,6 +311,13 @@ export class GoogleTasksManager {
     if (notes !== undefined)
       body.notes = notes;
     await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', body)));
+
+    // Edited right after creation, before any fetch has seen it yet: keep the
+    // remembered copy (see _recentlyCreated) in sync, or a reconcile in that
+    // window would show it with its pre-edit title/notes.
+    const pending = this._recentlyCreated.get(taskId);
+    if (pending)
+      pending.task = { ...pending.task, title, notes };
   }
 
   async deleteTask(taskListId: string, taskId: string): Promise<void> {
@@ -400,6 +437,7 @@ export class GoogleTasksManager {
     this._cancellable.cancel();
     this._statusOverrides.clear();
     this._pendingDeletions.clear();
+    this._recentlyCreated.clear();
     this._mutationQueues.clear();
   }
 }

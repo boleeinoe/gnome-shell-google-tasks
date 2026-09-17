@@ -1230,6 +1230,15 @@ const TasksSection = GObject.registerClass({
                 // "PopupBaseMenuItem has been already disposed" crash when a
                 // re-render tore this row down while the picker was in use.
                 colorMenu.close(BoxPointer.PopupAnimation.NONE);
+                // Detach from the manager first: it installs a grab helper on
+                // colorButton, and dropping the menu without telling it leaves
+                // that behind. Rows (and their color menus) get torn down and
+                // rebuilt on almost every action, so without this the shared
+                // _colorMenuManager accumulates one stale registration per
+                // past render — this is what made interaction feel laggy
+                // after a while (same fix already applied to the context menu
+                // in textInteraction.ts's showContextMenu()).
+                this._colorMenuManager.removeMenu(colorMenu);
                 colorMenu.destroy();
             });
             hoverButtons.push(colorButton);
