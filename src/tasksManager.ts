@@ -176,6 +176,13 @@ export class GoogleTasksManager {
   // that still disagrees, and a task just removed by deleteTask stays hidden
   // until the fetch stops mentioning it or the override lapses.
   private _reconcile(tasks: GoogleTask[]): GoogleTask[] {
+    // The common case: nothing was mutated since the last fetch, so there's
+    // nothing to reconcile. Skip the sweeps and the full-array rebuild below
+    // — this runs on every poll (every REFRESH_INTERVAL_SECONDS), not just
+    // right after a mutation.
+    if (this._statusOverrides.size === 0 && this._pendingDeletions.size === 0)
+      return tasks;
+
     const now = Date.now();
 
     for (const [id, expiresAt] of this._pendingDeletions) {
@@ -219,46 +226,51 @@ export class GoogleTasksManager {
   }
 
   async createTask(title: string, notes?: string, taskListId?: string, parentTaskId?: string): Promise<GoogleTask> {
-    let resolvedTaskListId = taskListId;
-    if (!resolvedTaskListId) {
-      const lists = await this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`);
-      if (lists.length === 0)
-        throw new Error('No task lists found');
-      resolvedTaskListId = lists[0].id;
-    }
+    // Wraps list-resolution too, not just the final POST: the previous
+    // caller-side retry (before this moved here) covered the whole call.
+    return withRetry(async () => {
+      let resolvedTaskListId = taskListId;
+      if (!resolvedTaskListId) {
+        const lists = await this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`);
+        if (lists.length === 0)
+          throw new Error('No task lists found');
+        resolvedTaskListId = lists[0].id;
+      }
 
-    const parentParam = parentTaskId ? `?parent=${encodeURIComponent(parentTaskId)}` : '';
-    const url = `${TASKS_API}/lists/${encodeURIComponent(resolvedTaskListId)}/tasks${parentParam}`;
-    const body: Record<string, string> = { title };
-    if (notes)
-      body.notes = notes;
+      const parentParam = parentTaskId ? `?parent=${encodeURIComponent(parentTaskId)}` : '';
+      const url = `${TASKS_API}/lists/${encodeURIComponent(resolvedTaskListId)}/tasks${parentParam}`;
+      const body: Record<string, string> = { title };
+      if (notes)
+        body.notes = notes;
 
-    const created = await withRetry(() => this._request<GoogleTask>(url, 'POST', body));
-    return { ...created, taskListId: resolvedTaskListId };
+      const created = await this._request<GoogleTask>(url, 'POST', body);
+      return { ...created, taskListId: resolvedTaskListId };
+    });
   }
 
   async completeTask(taskListId: string, taskId: string): Promise<void> {
-    this._statusOverrides.set(taskId, { status: 'completed', expiresAt: Date.now() + RECONCILE_OVERRIDE_TTL_MS });
+    return this._setStatus(taskListId, taskId, 'completed');
+  }
+
+  async uncompleteTask(taskListId: string, taskId: string): Promise<void> {
+    return this._setStatus(taskListId, taskId, 'needsAction');
+  }
+
+  private async _setStatus(taskListId: string, taskId: string, status: string): Promise<void> {
+    // Captured by reference so the rollback below only ever clears *this*
+    // call's own override — not one a newer, still-in-flight call for the
+    // same task id (e.g. complete then immediately uncomplete) already
+    // replaced it with while this request was in flight or queued.
+    const override = { status, expiresAt: Date.now() + RECONCILE_OVERRIDE_TTL_MS };
+    this._statusOverrides.set(taskId, override);
     try {
-      await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status: 'completed' })));
+      await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status })));
     }
     catch (error) {
       // A failed move looks like it worked, then silently undoes itself once
       // the override lapses, unless it's dropped right away. Left alone on
       // cancellation (extension disabling) — destroy() clears it right after.
-      if (!isCancelledError(error))
-        this._statusOverrides.delete(taskId);
-      throw error;
-    }
-  }
-
-  async uncompleteTask(taskListId: string, taskId: string): Promise<void> {
-    this._statusOverrides.set(taskId, { status: 'needsAction', expiresAt: Date.now() + RECONCILE_OVERRIDE_TTL_MS });
-    try {
-      await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status: 'needsAction' })));
-    }
-    catch (error) {
-      if (!isCancelledError(error))
+      if (!isCancelledError(error) && this._statusOverrides.get(taskId) === override)
         this._statusOverrides.delete(taskId);
       throw error;
     }
@@ -275,12 +287,16 @@ export class GoogleTasksManager {
     // A status override no longer means anything once the task is gone, and
     // would otherwise linger in the map until its own TTL.
     this._statusOverrides.delete(taskId);
-    this._pendingDeletions.set(taskId, Date.now() + RECONCILE_OVERRIDE_TTL_MS);
+    const deletionExpiresAt = Date.now() + RECONCILE_OVERRIDE_TTL_MS;
+    this._pendingDeletions.set(taskId, deletionExpiresAt);
     try {
       await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'DELETE')));
     }
     catch (error) {
-      if (!isCancelledError(error))
+      // Same by-reference guard as _setStatus(), against a second concurrent
+      // delete of this id (not reachable today — a deleted row disappears
+      // from the UI immediately — but cheap to make safe either way).
+      if (!isCancelledError(error) && this._pendingDeletions.get(taskId) === deletionExpiresAt)
         this._pendingDeletions.delete(taskId);
       throw error;
     }
@@ -291,7 +307,16 @@ export class GoogleTasksManager {
     const run = previous.then(fn, fn);
     // Keep the queue alive regardless of outcome, so a later action on this
     // same task still waits its turn instead of racing ahead of this one.
-    this._mutationQueues.set(taskId, run.catch(() => undefined));
+    const queued = run.catch(() => undefined);
+    this._mutationQueues.set(taskId, queued);
+    // Once settled, drop the entry — otherwise every distinct task id ever
+    // mutated stays in the map for the rest of the session. Only if it's
+    // still *this* call's entry: a newer mutation for the same id may have
+    // already replaced it while this one was in flight.
+    queued.finally(() => {
+      if (this._mutationQueues.get(taskId) === queued)
+        this._mutationQueues.delete(taskId);
+    });
     return run;
   }
 

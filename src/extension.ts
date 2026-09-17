@@ -2829,7 +2829,7 @@ export default class GoogleTasksExtension extends Extension {
             this._pendingMutations++;
             // uncompleteTask() tracks its own optimistic status override for
             // the reconcile that follows.
-            await this._tasksManager.uncompleteTask(taskListId, task.id);
+            await this._tasksManager!.uncompleteTask(taskListId, task.id);
             this._scheduleReconcile();
         }
         catch (e) {
