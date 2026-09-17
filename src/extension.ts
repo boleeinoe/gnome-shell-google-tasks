@@ -1543,6 +1543,14 @@ const TasksSection = GObject.registerClass({
 type TasksSectionInstance = InstanceType<typeof TasksSection>;
 
 const REFRESH_INTERVAL_SECONDS = 20;
+
+// Right after login, Online Accounts / network-manager / DNS can take a
+// while to come up — the configured refresh-interval (20s by default) then
+// means several minutes of dead air before the panel first populates,
+// retrying only every 20s. Poll faster until the very first load succeeds,
+// then switch to the normal cadence.
+const STARTUP_RETRY_INTERVAL_SECONDS = 5;
+
 const DEFAULT_COLUMN_WIDTH_PX = 520;
 const REFRESH_INTERVAL_KEY = 'refresh-interval';
 const TASK_SORT_ORDER_KEY = 'task-sort-order';
@@ -1591,6 +1599,8 @@ export default class GoogleTasksExtension extends Extension {
     private _emptyStateFontSizeChangedId: number | null = null;
     private _emptyStateOpacityChangedId: number | null = null;
     private _refreshTimerId: number | null = null;
+    private _hasLoadedOnce: boolean = false;
+    private _networkMonitorId: number | null = null;
     private _selectedTaskListId: string | null = null;
     private _taskLists: GoogleTaskList[] = [];
     private _activeTasksByListId: Map<string, GoogleTask[]> = new Map();
@@ -1785,6 +1795,16 @@ export default class GoogleTasksExtension extends Extension {
 
         this._refreshTasks();
         this._startRefreshTimer();
+
+        // Belt-and-braces alongside the fast startup-retry cadence above:
+        // react the moment the network actually comes up (Wi-Fi association,
+        // VPN, DNS) instead of waiting for the next poll tick to notice.
+        // Only wired up until the first successful load — after that the
+        // periodic timer alone is enough.
+        this._networkMonitorId = Gio.NetworkMonitor.get_default().connect('network-changed', (_monitor: any, available: boolean) => {
+            if (available && !this._hasLoadedOnce)
+                this._refreshTasks();
+        });
     }
 
     // Task colors are purely a local visual preference — they have no equivalent
@@ -2124,7 +2144,11 @@ export default class GoogleTasksExtension extends Extension {
 
     _startRefreshTimer() {
         this._stopRefreshTimer();
-        this._refreshTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, this._getRefreshIntervalSeconds(), () => {
+        // Fast cadence until the very first successful load (see
+        // STARTUP_RETRY_INTERVAL_SECONDS); _refreshTasks() switches this back
+        // to the configured interval once that happens.
+        const intervalSeconds = this._hasLoadedOnce ? this._getRefreshIntervalSeconds() : STARTUP_RETRY_INTERVAL_SECONDS;
+        this._refreshTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, intervalSeconds, () => {
             if (this._pendingMutations === 0)
                 this._refreshTasks();
             return GLib.SOURCE_CONTINUE;
@@ -2319,6 +2343,17 @@ export default class GoogleTasksExtension extends Extension {
             // tasks flicker or land back in the wrong section.
             if (requestId !== this._refreshRequestSeq)
                 return;
+
+            if (!this._hasLoadedOnce) {
+                this._hasLoadedOnce = true;
+                // Drop back from the fast startup-retry cadence to the
+                // configured one now that a load has actually succeeded.
+                this._startRefreshTimer();
+                if (this._networkMonitorId !== null) {
+                    Gio.NetworkMonitor.get_default().disconnect(this._networkMonitorId);
+                    this._networkMonitorId = null;
+                }
+            }
 
             this._taskLists = taskLists;
             this._activeTasksByListId = new Map(taskLists.map(list => [list.id, []] as [string, GoogleTask[]]));
@@ -2899,9 +2934,14 @@ export default class GoogleTasksExtension extends Extension {
 
     disable() {
         this._stopRefreshTimer();
+        if (this._networkMonitorId !== null) {
+            Gio.NetworkMonitor.get_default().disconnect(this._networkMonitorId);
+            this._networkMonitorId = null;
+        }
         setOnContextMenuClosed(null);
         this._lastRenderSignature = null;
         this._renderDeferred = false;
+        this._hasLoadedOnce = false;
         this._taskCreationTimes.clear();
 
         if (this._menuBoxLayout && this._menuBoxOrientation !== null) {
