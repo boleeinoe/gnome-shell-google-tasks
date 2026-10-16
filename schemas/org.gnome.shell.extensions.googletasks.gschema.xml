@@ -128,11 +128,17 @@
       <summary>Show task blocks</summary>
       <description>Whether "my tasks" and "completed" are drawn as separate shaded blocks.</description>
     </key>
-    <key name="task-blocks-darkness" type="i">
-      <default>20</default>
-      <range min="0" max="60"/>
-      <summary>Task block darkness</summary>
-      <description>How much darker than the popup the task blocks are, as the opacity percentage of a black overlay. The blocks stay translucent over a translucent theme.</description>
+    <key name="task-blocks-opacity" type="i">
+      <default>100</default>
+      <range min="0" max="300"/>
+      <summary>Task block opacity</summary>
+      <description>Opacity of the task blocks as a percentage of the shell theme's notification bubble opacity: 100 matches a notification exactly, lower is more transparent, higher more solid.</description>
+    </key>
+    <key name="task-blocks-edge-blur" type="i">
+      <default>8</default>
+      <range min="0" max="24"/>
+      <summary>Task block edge blur</summary>
+      <description>Width in pixels of the soft edge on the task blocks and the task-list picker. 0 draws a crisp 1px outline instead.</description>
     </key>
   </schema>
 </schemalist>

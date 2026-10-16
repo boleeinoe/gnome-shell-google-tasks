@@ -131,14 +131,12 @@
     background-color: rgba(128, 128, 128, 0.3);
 }
 
-/* Task-list picker. Solid fill matching the dropdown button (which renders as
-   #222 over the popup), plus a light border so the edges stay visible over
-   the task rows behind it. */
+/* Task-list picker. Background, edge and radius are set inline from the
+   notification bubble's color at runtime (over a background blur), see
+   _updateBlockStyle(); these are only the fallback until that runs. */
 .google-tasks-dropdown-menu .popup-menu-content {
     background-color: #222222;
-    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 
 .tasks-completed-toggle {
@@ -470,9 +468,9 @@
     padding: 4px 0;
 }
 /* The two logical blocks: "my tasks" (picker, add form, tasks + subtasks) and
-   "completed". Background (a black overlay, darker than the popup), border and
-   radius are set inline at runtime, see _updateBlockStyle(); the class is
-   dropped entirely when blocks are turned off in the preferences. */
+   "completed". Background (the notification bubble's color), edge and radius
+   are set inline at runtime, see _updateBlockStyle(); the class is dropped
+   entirely when blocks are turned off in the preferences. */
 .google-tasks-block {
     padding: 8px;
     border-radius: 12px;
@@ -481,4 +479,14 @@
 .google-tasks-block-completed {
     padding-top: 4px;
     padding-bottom: 4px;
+}
+
+/* Inside a block the list picker button is a shade darker than the block, so
+   it stands apart from it instead of blending in. */
+.google-tasks-block .google-tasks-dropdown-button {
+    background-color: rgba(0, 0, 0, 0.18);
+}
+
+.google-tasks-block .google-tasks-dropdown-button:hover {
+    background-color: rgba(0, 0, 0, 0.26);
 }

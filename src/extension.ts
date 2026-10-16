@@ -3,6 +3,7 @@ import type { GoogleTask, GoogleTaskList } from './tasksManager.js';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -19,12 +20,23 @@ import {
     type TextStrings,
 } from './textInteraction.js';
 
-// Task blocks: defaults for the on/off and darkness settings, the extra
-// alpha for their outline, and corner radius (read from the theme's
-// notification bubble, capped).
+// Task blocks: defaults for the on/off, opacity and edge-blur settings, the
+// extra alpha for their outline, and corner radius (read from the theme's
+// notification bubble, capped). Opacity is a percentage of the notification
+// bubble's own alpha, so 100 paints the blocks exactly like a notification.
 const DEFAULT_TASK_BLOCKS_ENABLED = true;
-const DEFAULT_TASK_BLOCKS_DARKNESS_PERCENT = 20;
+const DEFAULT_TASK_BLOCKS_OPACITY_PERCENT = 100;
+const DEFAULT_TASK_BLOCKS_EDGE_BLUR_PX = 8;
 const BLOCK_BORDER_ALPHA_EXTRA = 0.06;
+// Used when the notification color can't be read (popup not on stage yet):
+// roughly what the default theme gives `.message`.
+const BLOCK_FALLBACK_COLOR = { r: 255, g: 255, b: 255, a: 0.08 };
+// Background blur behind the task-list picker, so it can carry the same
+// translucent notification tint without the task rows showing through.
+const DROPDOWN_BLUR_RADIUS_PX = 40;
+// Only if the blur effect can't be created: the picker is then painted solid,
+// the notification tint laid over this base.
+const DROPDOWN_FALLBACK_BASE = { r: 34, g: 34, b: 34 };
 const BLOCK_FALLBACK_RADIUS_PX = 12;
 const BLOCK_MAX_RADIUS_PX = 16;
 
@@ -235,7 +247,11 @@ const TasksSection = GObject.registerClass({
     // so the main block never has to stretch to center it.
     private _blockSpacer!: St.BoxLayout;
     private _blocksEnabled!: boolean;
-    private _blocksDarknessPercent!: number;
+    private _blocksOpacityPercent!: number;
+    private _blocksEdgeBlurPx!: number;
+    // Whether the background blur behind the task-list picker could be set
+    // up; without it the picker gets an opaque fill instead.
+    private _dropdownBlurred = false;
     // Hidden widget carrying GNOME Shell's own `.message` class — the
     // notification bubble. Its theme node is read back so the blocks follow
     // whatever color the active shell theme gives notifications.
@@ -338,7 +354,8 @@ const TasksSection = GObject.registerClass({
         this._pendingFormReopen = null;
         this._activeFormCloser = null;
         this._blocksEnabled = DEFAULT_TASK_BLOCKS_ENABLED;
-        this._blocksDarknessPercent = DEFAULT_TASK_BLOCKS_DARKNESS_PERCENT;
+        this._blocksOpacityPercent = DEFAULT_TASK_BLOCKS_OPACITY_PERCENT;
+        this._blocksEdgeBlurPx = DEFAULT_TASK_BLOCKS_EDGE_BLUR_PX;
 
         const box = new St.BoxLayout({
             style_class: 'google-tasks-box',
@@ -377,9 +394,22 @@ const TasksSection = GObject.registerClass({
         });
 
         this._taskListDropdownMenu = new PopupMenu.PopupMenu(this._taskListDropdownButton, 0.0, St.Side.TOP);
-        // Opaque background: the shell's translucent menu style blends into the
-        // task rows under it once a blur is applied behind the panel popup.
+        // Painted with the notification bubble's color (see _updateBlockStyle())
+        // over a background blur, so it matches the blocks without the task
+        // rows under it showing through.
         this._taskListDropdownMenu.actor.add_style_class_name('google-tasks-dropdown-menu');
+        try {
+            const scale = St.ThemeContext.get_for_stage((globalThis as any).global.stage).scale_factor;
+            this._taskListDropdownMenu.box.add_effect_with_name('google-tasks-dropdown-blur', new Shell.BlurEffect({
+                mode: Shell.BlurMode.BACKGROUND,
+                radius: DROPDOWN_BLUR_RADIUS_PX * scale,
+                brightness: 1.0,
+            }));
+            this._dropdownBlurred = true;
+        }
+        catch (e) {
+            console.warn(`[google-tasks] could not blur the task-list picker: ${e}`);
+        }
         Main.uiGroup.add_child(this._taskListDropdownMenu.actor);
         this._taskListDropdownMenu.actor.hide();
         this._taskListDropdownMenuManager = new PopupMenu.PopupMenuManager(this);
@@ -653,11 +683,13 @@ const TasksSection = GObject.registerClass({
         this._emptyStateOpacityPercent = percent;
     }
 
-    // Turns the two blocks on/off and sets how much darker than the popup they
-    // are. Applied immediately — no re-render needed.
-    setTaskBlocks(enabled: boolean, darknessPercent: number) {
+    // Turns the two blocks on/off and sets their opacity (as a percentage of
+    // the notification bubble's) and how soft their edges are. Applied
+    // immediately — no re-render needed.
+    setTaskBlocks(enabled: boolean, opacityPercent: number, edgeBlurPx: number) {
         this._blocksEnabled = enabled;
-        this._blocksDarknessPercent = darknessPercent;
+        this._blocksOpacityPercent = opacityPercent;
+        this._blocksEdgeBlurPx = edgeBlurPx;
         this._updateBlockStyle();
     }
 
@@ -1628,13 +1660,56 @@ const TasksSection = GObject.registerClass({
         this._activeTasksList.visible = !empty;
     }
 
-    // Paints both blocks a little darker than the popup behind them: a black
-    // overlay at the configured alpha. Over an opaque theme that is a solid,
-    // slightly darker card; over a translucent (blurred) one it stays
-    // translucent, just darker, so the text on it stands out. The corner radius
-    // still follows the theme's notification bubble. With blocks turned off,
-    // both go back to plain, unpadded boxes.
+    // Paints both blocks, and the task-list picker, in GNOME Shell's own
+    // notification-bubble color (read from a hidden `.message` probe), so they
+    // follow the theme: opaque themes give solid cards, translucent ones keep
+    // the blocks translucent. The blocks' alpha is scaled by the opacity
+    // setting; the picker always uses the bubble's color as is, over a
+    // background blur. Edges are either a 1px outline (edge blur 0) or a soft
+    // inner glow of the given width. With blocks turned off, both go back to
+    // plain, unpadded boxes; the picker keeps its styling.
     private _updateBlockStyle() {
+        let { r, g, b, a } = BLOCK_FALLBACK_COLOR;
+        let radius = BLOCK_FALLBACK_RADIUS_PX;
+        if (this._blockColorProbe.get_stage()) {
+            try {
+                const node = this._blockColorProbe.get_theme_node();
+                const color = node.get_background_color();
+                if (color.alpha > 0) {
+                    r = color.red;
+                    g = color.green;
+                    b = color.blue;
+                    a = color.alpha / 255;
+                }
+                radius = Math.min(BLOCK_MAX_RADIUS_PX, node.get_border_radius(St.Corner.TOPLEFT));
+            }
+            catch (e) {
+                console.warn(`[google-tasks] could not read notification color: ${e}`);
+            }
+        }
+
+        const blur = Math.max(0, Math.round(this._blocksEdgeBlurPx));
+        const edge = (alpha: number) => {
+            const rgba = `rgba(${r}, ${g}, ${b}, ${Math.min(1, alpha + BLOCK_BORDER_ALPHA_EXTRA).toFixed(3)})`;
+            return blur > 0
+                ? [`border: none`, `box-shadow: inset 0 0 ${blur}px ${rgba}`]
+                : [`border: 1px solid ${rgba}`];
+        };
+
+        // Picker: the bubble's color over a blur of whatever is behind it; if
+        // the blur isn't available, flatten the tint onto a solid base.
+        let menuFill = `rgba(${r}, ${g}, ${b}, ${a.toFixed(3)})`;
+        if (!this._dropdownBlurred) {
+            const base = DROPDOWN_FALLBACK_BASE;
+            const mix = (fg: number, bg: number) => Math.round(fg * a + bg * (1 - a));
+            menuFill = `rgb(${mix(r, base.r)}, ${mix(g, base.g)}, ${mix(b, base.b)})`;
+        }
+        this._taskListDropdownMenu.box.set_style(`${[
+            `background-color: ${menuFill}`,
+            ...edge(a),
+            `border-radius: ${Math.min(radius, 8)}px`,
+        ].join('; ')};`);
+
         if (!this._blocksEnabled) {
             this._mainBlock.style_class = '';
             this._completedBlock.style_class = '';
@@ -1646,22 +1721,10 @@ const TasksSection = GObject.registerClass({
         this._mainBlock.style_class = 'google-tasks-block google-tasks-block-main';
         this._completedBlock.style_class = 'google-tasks-block google-tasks-block-completed';
 
-        let radius = BLOCK_FALLBACK_RADIUS_PX;
-        if (this._blockColorProbe.get_stage()) {
-            try {
-                const node = this._blockColorProbe.get_theme_node();
-                radius = Math.min(BLOCK_MAX_RADIUS_PX, node.get_border_radius(St.Corner.TOPLEFT));
-            }
-            catch (e) {
-                console.warn(`[google-tasks] could not read notification radius: ${e}`);
-            }
-        }
-
-        const fillAlpha = Math.min(100, Math.max(0, this._blocksDarknessPercent)) / 100;
-        const borderAlpha = Math.min(1, fillAlpha + BLOCK_BORDER_ALPHA_EXTRA);
+        const fillAlpha = Math.min(1, a * Math.max(0, this._blocksOpacityPercent) / 100);
         const style = `${[
-            `background-color: rgba(0, 0, 0, ${fillAlpha.toFixed(3)})`,
-            `border: 1px solid rgba(0, 0, 0, ${borderAlpha.toFixed(3)})`,
+            `background-color: rgba(${r}, ${g}, ${b}, ${fillAlpha.toFixed(3)})`,
+            ...edge(fillAlpha),
             `border-radius: ${radius}px`,
         ].join('; ')};`;
 
@@ -1701,7 +1764,8 @@ const EMPTY_STATE_ICON_SIZE_KEY = 'empty-state-icon-size';
 const EMPTY_STATE_FONT_SIZE_KEY = 'empty-state-font-size';
 const EMPTY_STATE_OPACITY_KEY = 'empty-state-opacity';
 const TASK_BLOCKS_ENABLED_KEY = 'task-blocks-enabled';
-const TASK_BLOCKS_DARKNESS_KEY = 'task-blocks-darkness';
+const TASK_BLOCKS_OPACITY_KEY = 'task-blocks-opacity';
+const TASK_BLOCKS_EDGE_BLUR_KEY = 'task-blocks-edge-blur';
 
 type TaskSortOrder = 'my-order' | 'date' | 'deadline' | 'starred-recently' | 'title';
 type TaskTimeframe = 'all' | 'today' | 'this-week' | 'this-month';
@@ -1924,7 +1988,7 @@ export default class GoogleTasksExtension extends Extension {
             this._emptyStateOpacityChangedId = this._settings.connect(`changed::${EMPTY_STATE_OPACITY_KEY}`, () => {
                 this._scheduleRenderOnly();
             });
-            for (const key of [TASK_BLOCKS_ENABLED_KEY, TASK_BLOCKS_DARKNESS_KEY]) {
+            for (const key of [TASK_BLOCKS_ENABLED_KEY, TASK_BLOCKS_OPACITY_KEY, TASK_BLOCKS_EDGE_BLUR_KEY]) {
                 this._taskBlocksChangedIds.push(this._settings.connect(`changed::${key}`, () => {
                     this._applyTaskBlocks();
                 }));
@@ -2195,10 +2259,13 @@ export default class GoogleTasksExtension extends Extension {
         const enabled = this._settings
             ? this._settings.get_boolean(TASK_BLOCKS_ENABLED_KEY)
             : DEFAULT_TASK_BLOCKS_ENABLED;
-        const darkness = this._settings
-            ? this._settings.get_int(TASK_BLOCKS_DARKNESS_KEY)
-            : DEFAULT_TASK_BLOCKS_DARKNESS_PERCENT;
-        this._tasksSection.setTaskBlocks(enabled, darkness);
+        const opacity = this._settings
+            ? this._settings.get_int(TASK_BLOCKS_OPACITY_KEY)
+            : DEFAULT_TASK_BLOCKS_OPACITY_PERCENT;
+        const edgeBlur = this._settings
+            ? this._settings.get_int(TASK_BLOCKS_EDGE_BLUR_KEY)
+            : DEFAULT_TASK_BLOCKS_EDGE_BLUR_PX;
+        this._tasksSection.setTaskBlocks(enabled, opacity, edgeBlur);
     }
 
     _getEmptyStateOpacityPercent(): number {

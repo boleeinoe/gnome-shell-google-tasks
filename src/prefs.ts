@@ -23,7 +23,8 @@ const EMPTY_STATE_ICON_SIZE_KEY = 'empty-state-icon-size';
 const EMPTY_STATE_FONT_SIZE_KEY = 'empty-state-font-size';
 const EMPTY_STATE_OPACITY_KEY = 'empty-state-opacity';
 const TASK_BLOCKS_ENABLED_KEY = 'task-blocks-enabled';
-const TASK_BLOCKS_DARKNESS_KEY = 'task-blocks-darkness';
+const TASK_BLOCKS_OPACITY_KEY = 'task-blocks-opacity';
+const TASK_BLOCKS_EDGE_BLUR_KEY = 'task-blocks-edge-blur';
 
 const SORT_OPTIONS = [
   { id: 'my-order', label: 'My order' },
@@ -176,25 +177,40 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     });
     settings.bind(TASK_BLOCKS_ENABLED_KEY, taskBlocksRow, 'active', Gio.SettingsBindFlags.DEFAULT);
 
-    const taskBlocksDarknessRow = new Adw.SpinRow({
-      title: 'Task block darkness',
-      subtitle: 'How much darker than the popup the blocks are, in percent. They stay translucent over a translucent theme.',
+    const taskBlocksOpacityRow = new Adw.SpinRow({
+      title: 'Task block opacity',
+      subtitle: 'Percent of the notification bubble\'s opacity: 100 looks exactly like a GNOME notification, lower is more transparent, higher more solid.',
       adjustment: new Gtk.Adjustment({
         lower: 0,
-        upper: 60,
-        step_increment: 2,
-        page_increment: 10,
+        upper: 300,
+        step_increment: 5,
+        page_increment: 25,
       }),
       digits: 0,
       numeric: true,
     });
-    settings.bind(TASK_BLOCKS_DARKNESS_KEY, taskBlocksDarknessRow, 'value', Gio.SettingsBindFlags.DEFAULT);
-    settings.bind(TASK_BLOCKS_ENABLED_KEY, taskBlocksDarknessRow, 'sensitive', Gio.SettingsBindFlags.GET);
+    settings.bind(TASK_BLOCKS_OPACITY_KEY, taskBlocksOpacityRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+    settings.bind(TASK_BLOCKS_ENABLED_KEY, taskBlocksOpacityRow, 'sensitive', Gio.SettingsBindFlags.GET);
+
+    const taskBlocksEdgeBlurRow = new Adw.SpinRow({
+      title: 'Task block edge blur',
+      subtitle: 'How soft the edge of the blocks and the list picker is, in pixels. 0 draws a crisp 1px outline.',
+      adjustment: new Gtk.Adjustment({
+        lower: 0,
+        upper: 24,
+        step_increment: 1,
+        page_increment: 4,
+      }),
+      digits: 0,
+      numeric: true,
+    });
+    settings.bind(TASK_BLOCKS_EDGE_BLUR_KEY, taskBlocksEdgeBlurRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     appearanceGroup.add(columnWidthRow);
     appearanceGroup.add(cornerRadiusRow);
     appearanceGroup.add(taskBlocksRow);
-    appearanceGroup.add(taskBlocksDarknessRow);
+    appearanceGroup.add(taskBlocksOpacityRow);
+    appearanceGroup.add(taskBlocksEdgeBlurRow);
     page.add(appearanceGroup);
 
     const typographyGroup = new Adw.PreferencesGroup({
