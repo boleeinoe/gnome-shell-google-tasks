@@ -123,5 +123,16 @@
       <summary>Empty state opacity</summary>
       <description>Opacity percentage applied to both the icon and text of the "no tasks" placeholder.</description>
     </key>
+    <key name="task-blocks-enabled" type="b">
+      <default>true</default>
+      <summary>Show task blocks</summary>
+      <description>Whether "my tasks" and "completed" are drawn as separate shaded blocks.</description>
+    </key>
+    <key name="task-blocks-darkness" type="i">
+      <default>20</default>
+      <range min="0" max="60"/>
+      <summary>Task block darkness</summary>
+      <description>How much darker than the popup the task blocks are, as the opacity percentage of a black overlay. The blocks stay translucent over a translucent theme.</description>
+    </key>
   </schema>
 </schemalist>

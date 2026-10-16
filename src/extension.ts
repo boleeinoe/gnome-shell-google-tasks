@@ -19,10 +19,12 @@ import {
     type TextStrings,
 } from './textInteraction.js';
 
-// Task blocks: minimum fill alpha when the theme's notification color is
-// (nearly) transparent, the extra alpha for their outline, and corner radius.
-const BLOCK_MIN_FILL_ALPHA = 0.1;
-const BLOCK_BORDER_ALPHA_EXTRA = 0.08;
+// Task blocks: defaults for the on/off and darkness settings, the extra
+// alpha for their outline, and corner radius (read from the theme's
+// notification bubble, capped).
+const DEFAULT_TASK_BLOCKS_ENABLED = true;
+const DEFAULT_TASK_BLOCKS_DARKNESS_PERCENT = 20;
+const BLOCK_BORDER_ALPHA_EXTRA = 0.06;
 const BLOCK_FALLBACK_RADIUS_PX = 12;
 const BLOCK_MAX_RADIUS_PX = 16;
 
@@ -228,7 +230,12 @@ const TasksSection = GObject.registerClass({
     // with their subtasks) and "completed" (toggle + completed list).
     private _mainBlock!: St.BoxLayout;
     private _completedBlock!: St.BoxLayout;
-    private _blockSpacer!: St.Widget;
+    // Fills the height between the two blocks. Normally empty (it just keeps
+    // "Completed" at the bottom); holds the "no tasks" placeholder, centered,
+    // so the main block never has to stretch to center it.
+    private _blockSpacer!: St.BoxLayout;
+    private _blocksEnabled!: boolean;
+    private _blocksDarknessPercent!: number;
     // Hidden widget carrying GNOME Shell's own `.message` class — the
     // notification bubble. Its theme node is read back so the blocks follow
     // whatever color the active shell theme gives notifications.
@@ -330,6 +337,8 @@ const TasksSection = GObject.registerClass({
         this._activeFormSnapshot = null;
         this._pendingFormReopen = null;
         this._activeFormCloser = null;
+        this._blocksEnabled = DEFAULT_TASK_BLOCKS_ENABLED;
+        this._blocksDarknessPercent = DEFAULT_TASK_BLOCKS_DARKNESS_PERCENT;
 
         const box = new St.BoxLayout({
             style_class: 'google-tasks-box',
@@ -501,7 +510,11 @@ const TasksSection = GObject.registerClass({
         });
         this._mainBlock.add_child(this._activeTasksList);
 
-        this._blockSpacer = new St.Widget({ y_expand: true });
+        this._blockSpacer = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            x_expand: true,
+            y_expand: true,
+        });
         box.add_child(this._blockSpacer);
 
         const completedHeaderContent = new St.BoxLayout({
@@ -638,6 +651,14 @@ const TasksSection = GObject.registerClass({
 
     setEmptyStateOpacity(percent: number) {
         this._emptyStateOpacityPercent = percent;
+    }
+
+    // Turns the two blocks on/off and sets how much darker than the popup they
+    // are. Applied immediately — no re-render needed.
+    setTaskBlocks(enabled: boolean, darknessPercent: number) {
+        this._blocksEnabled = enabled;
+        this._blocksDarknessPercent = darknessPercent;
+        this._updateBlockStyle();
     }
 
     // Updates the interface language and immediately re-applies it to every
@@ -1594,50 +1615,53 @@ const TasksSection = GObject.registerClass({
 
         container.add_child(icon);
         container.add_child(label);
-        this._activeTasksList.add_child(container);
+        this._blockSpacer.add_child(container);
         this._setEmptyStateLayout(true);
     }
 
-    // The placeholder is centered in the free height, so while it is shown the
-    // main block (and the list in it) takes that height instead of the spacer.
+    // The placeholder sits in the spacer below the main block, centered in the
+    // free height; the block itself keeps hugging its content (just the list
+    // picker), and the empty task list is hidden so it adds no padding.
     private _setEmptyStateLayout(empty: boolean) {
-        this._mainBlock.y_expand = empty;
-        this._activeTasksList.y_expand = empty;
-        this._blockSpacer.visible = !empty;
+        if (!empty)
+            this._blockSpacer.destroy_all_children();
+        this._activeTasksList.visible = !empty;
     }
 
-    // Paints both blocks with the notification bubble's background. With an
-    // opaque theme that is the same solid card color; with a translucent one
-    // (blurred popup) the fill stays translucent, but its alpha is raised to a
-    // floor so the block edge is still visible against the blur, and a slightly
-    // stronger border of the same color outlines it.
+    // Paints both blocks a little darker than the popup behind them: a black
+    // overlay at the configured alpha. Over an opaque theme that is a solid,
+    // slightly darker card; over a translucent (blurred) one it stays
+    // translucent, just darker, so the text on it stands out. The corner radius
+    // still follows the theme's notification bubble. With blocks turned off,
+    // both go back to plain, unpadded boxes.
     private _updateBlockStyle() {
-        if (!this._blockColorProbe.get_stage())
+        if (!this._blocksEnabled) {
+            this._mainBlock.style_class = '';
+            this._completedBlock.style_class = '';
+            this._mainBlock.set_style(null);
+            this._completedBlock.set_style(null);
             return;
+        }
 
-        let r = 255;
-        let g = 255;
-        let b = 255;
-        let a = 0;
+        this._mainBlock.style_class = 'google-tasks-block google-tasks-block-main';
+        this._completedBlock.style_class = 'google-tasks-block google-tasks-block-completed';
+
         let radius = BLOCK_FALLBACK_RADIUS_PX;
-        try {
-            const node = this._blockColorProbe.get_theme_node();
-            const color = node.get_background_color();
-            r = color.red;
-            g = color.green;
-            b = color.blue;
-            a = color.alpha / 255;
-            radius = Math.min(BLOCK_MAX_RADIUS_PX, node.get_border_radius(St.Corner.TOPLEFT));
-        }
-        catch (e) {
-            console.warn(`[google-tasks] could not read notification color: ${e}`);
+        if (this._blockColorProbe.get_stage()) {
+            try {
+                const node = this._blockColorProbe.get_theme_node();
+                radius = Math.min(BLOCK_MAX_RADIUS_PX, node.get_border_radius(St.Corner.TOPLEFT));
+            }
+            catch (e) {
+                console.warn(`[google-tasks] could not read notification radius: ${e}`);
+            }
         }
 
-        const fillAlpha = Math.max(BLOCK_MIN_FILL_ALPHA, a);
+        const fillAlpha = Math.min(100, Math.max(0, this._blocksDarknessPercent)) / 100;
         const borderAlpha = Math.min(1, fillAlpha + BLOCK_BORDER_ALPHA_EXTRA);
         const style = `${[
-            `background-color: rgba(${r}, ${g}, ${b}, ${fillAlpha.toFixed(3)})`,
-            `border: 1px solid rgba(${r}, ${g}, ${b}, ${borderAlpha.toFixed(3)})`,
+            `background-color: rgba(0, 0, 0, ${fillAlpha.toFixed(3)})`,
+            `border: 1px solid rgba(0, 0, 0, ${borderAlpha.toFixed(3)})`,
             `border-radius: ${radius}px`,
         ].join('; ')};`;
 
@@ -1676,6 +1700,8 @@ const EMPTY_STATE_ICON_KEY = 'empty-state-icon';
 const EMPTY_STATE_ICON_SIZE_KEY = 'empty-state-icon-size';
 const EMPTY_STATE_FONT_SIZE_KEY = 'empty-state-font-size';
 const EMPTY_STATE_OPACITY_KEY = 'empty-state-opacity';
+const TASK_BLOCKS_ENABLED_KEY = 'task-blocks-enabled';
+const TASK_BLOCKS_DARKNESS_KEY = 'task-blocks-darkness';
 
 type TaskSortOrder = 'my-order' | 'date' | 'deadline' | 'starred-recently' | 'title';
 type TaskTimeframe = 'all' | 'today' | 'this-week' | 'this-month';
@@ -1704,6 +1730,7 @@ export default class GoogleTasksExtension extends Extension {
     private _emptyStateIconSizeChangedId: number | null = null;
     private _emptyStateFontSizeChangedId: number | null = null;
     private _emptyStateOpacityChangedId: number | null = null;
+    private _taskBlocksChangedIds: number[] = [];
     private _refreshTimerId: number | null = null;
     private _hasLoadedOnce: boolean = false;
     private _networkMonitorId: number | null = null;
@@ -1897,7 +1924,13 @@ export default class GoogleTasksExtension extends Extension {
             this._emptyStateOpacityChangedId = this._settings.connect(`changed::${EMPTY_STATE_OPACITY_KEY}`, () => {
                 this._scheduleRenderOnly();
             });
+            for (const key of [TASK_BLOCKS_ENABLED_KEY, TASK_BLOCKS_DARKNESS_KEY]) {
+                this._taskBlocksChangedIds.push(this._settings.connect(`changed::${key}`, () => {
+                    this._applyTaskBlocks();
+                }));
+            }
         }
+        this._applyTaskBlocks();
 
         this._refreshTasks();
         this._startRefreshTimer();
@@ -2154,6 +2187,18 @@ export default class GoogleTasksExtension extends Extension {
             return DEFAULT_EMPTY_STATE_FONT_SIZE_PX;
         const value = this._settings.get_int(EMPTY_STATE_FONT_SIZE_KEY);
         return value > 0 ? value : DEFAULT_EMPTY_STATE_FONT_SIZE_PX;
+    }
+
+    _applyTaskBlocks() {
+        if (!this._tasksSection)
+            return;
+        const enabled = this._settings
+            ? this._settings.get_boolean(TASK_BLOCKS_ENABLED_KEY)
+            : DEFAULT_TASK_BLOCKS_ENABLED;
+        const darkness = this._settings
+            ? this._settings.get_int(TASK_BLOCKS_DARKNESS_KEY)
+            : DEFAULT_TASK_BLOCKS_DARKNESS_PERCENT;
+        this._tasksSection.setTaskBlocks(enabled, darkness);
     }
 
     _getEmptyStateOpacityPercent(): number {
@@ -3137,6 +3182,9 @@ export default class GoogleTasksExtension extends Extension {
             this._settings.disconnect(this._emptyStateOpacityChangedId);
             this._emptyStateOpacityChangedId = null;
         }
+        for (const id of this._taskBlocksChangedIds)
+            this._settings?.disconnect(id);
+        this._taskBlocksChangedIds = [];
 
         this._settings = null;
         this._selectedTaskListId = null;

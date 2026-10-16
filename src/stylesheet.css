@@ -470,8 +470,9 @@
     padding: 4px 0;
 }
 /* The two logical blocks: "my tasks" (picker, add form, tasks + subtasks) and
-   "completed". Background, border and radius are set inline at runtime from
-   the shell theme's notification bubble (.message), see _updateBlockStyle(). */
+   "completed". Background (a black overlay, darker than the popup), border and
+   radius are set inline at runtime, see _updateBlockStyle(); the class is
+   dropped entirely when blocks are turned off in the preferences. */
 .google-tasks-block {
     padding: 8px;
     border-radius: 12px;

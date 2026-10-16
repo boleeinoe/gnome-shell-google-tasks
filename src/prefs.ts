@@ -22,6 +22,8 @@ const EMPTY_STATE_ICON_KEY = 'empty-state-icon';
 const EMPTY_STATE_ICON_SIZE_KEY = 'empty-state-icon-size';
 const EMPTY_STATE_FONT_SIZE_KEY = 'empty-state-font-size';
 const EMPTY_STATE_OPACITY_KEY = 'empty-state-opacity';
+const TASK_BLOCKS_ENABLED_KEY = 'task-blocks-enabled';
+const TASK_BLOCKS_DARKNESS_KEY = 'task-blocks-darkness';
 
 const SORT_OPTIONS = [
   { id: 'my-order', label: 'My order' },
@@ -168,8 +170,31 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     });
     settings.bind(CORNER_RADIUS_KEY, cornerRadiusRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
+    const taskBlocksRow = new Adw.SwitchRow({
+      title: 'Task blocks',
+      subtitle: 'Draw "my tasks" and "completed" as separate shaded blocks.',
+    });
+    settings.bind(TASK_BLOCKS_ENABLED_KEY, taskBlocksRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+
+    const taskBlocksDarknessRow = new Adw.SpinRow({
+      title: 'Task block darkness',
+      subtitle: 'How much darker than the popup the blocks are, in percent. They stay translucent over a translucent theme.',
+      adjustment: new Gtk.Adjustment({
+        lower: 0,
+        upper: 60,
+        step_increment: 2,
+        page_increment: 10,
+      }),
+      digits: 0,
+      numeric: true,
+    });
+    settings.bind(TASK_BLOCKS_DARKNESS_KEY, taskBlocksDarknessRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+    settings.bind(TASK_BLOCKS_ENABLED_KEY, taskBlocksDarknessRow, 'sensitive', Gio.SettingsBindFlags.GET);
+
     appearanceGroup.add(columnWidthRow);
     appearanceGroup.add(cornerRadiusRow);
+    appearanceGroup.add(taskBlocksRow);
+    appearanceGroup.add(taskBlocksDarknessRow);
     page.add(appearanceGroup);
 
     const typographyGroup = new Adw.PreferencesGroup({
