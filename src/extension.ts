@@ -281,7 +281,7 @@ const TasksSection = GObject.registerClass({
     _init() {
         super._init({
             style_class: 'google-tasks-section',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true,
         });
@@ -316,7 +316,7 @@ const TasksSection = GObject.registerClass({
 
         const box = new St.BoxLayout({
             style_class: 'google-tasks-box',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true,
         });
@@ -387,7 +387,7 @@ const TasksSection = GObject.registerClass({
 
         this._addTaskForm = new St.BoxLayout({
             style_class: 'google-tasks-add-form',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             visible: false,
             opacity: 0,
         });
@@ -464,7 +464,7 @@ const TasksSection = GObject.registerClass({
 
         this._activeTasksList = new St.BoxLayout({
             style_class: 'tasks-list',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true,
         });
@@ -505,7 +505,7 @@ const TasksSection = GObject.registerClass({
 
         this._completedTasksList = new St.BoxLayout({
             style_class: 'tasks-list tasks-completed-list',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             visible: false,
         });
@@ -999,7 +999,7 @@ const TasksSection = GObject.registerClass({
                 ? 'google-tasks-add-form google-tasks-edit-form-nested'
                 : 'google-tasks-add-form';
 
-            const form = new St.BoxLayout({ style_class: formStyleClass, vertical: true });
+            const form = new St.BoxLayout({ style_class: formStyleClass, orientation: Clutter.Orientation.VERTICAL });
             if (options.colored && effectiveColor && effectiveColor !== 'none') {
                 const hex = TASK_COLOR_HEX[effectiveColor];
                 if (hex) {
@@ -1502,7 +1502,7 @@ const TasksSection = GObject.registerClass({
 
         const container = new St.BoxLayout({
             style_class: 'google-tasks-empty-state-container',
-            vertical: true,
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_expand: true,
             x_align: Clutter.ActorAlign.CENTER,
@@ -1674,7 +1674,7 @@ export default class GoogleTasksExtension extends Extension {
         const menuBox = dateMenu._box || dateMenu.menu?.box;
         if (menuBox) {
             this._columnContainer = new St.BoxLayout({
-                vertical: true,
+                orientation: Clutter.Orientation.VERTICAL,
                 x_expand: true,
                 y_expand: true,
                 // 'datemenu-calendar-column' is GNOME Shell's own class — it's
