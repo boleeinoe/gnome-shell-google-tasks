@@ -19,6 +19,13 @@ import {
     type TextStrings,
 } from './textInteraction.js';
 
+// Task blocks: minimum fill alpha when the theme's notification color is
+// (nearly) transparent, the extra alpha for their outline, and corner radius.
+const BLOCK_MIN_FILL_ALPHA = 0.1;
+const BLOCK_BORDER_ALPHA_EXTRA = 0.08;
+const BLOCK_FALLBACK_RADIUS_PX = 12;
+const BLOCK_MAX_RADIUS_PX = 16;
+
 const TASK_COLOR_PALETTE: { id: string; label: string }[] = [
     { id: 'none', label: 'No color' },
     { id: 'red', label: 'Red' },
@@ -217,6 +224,16 @@ const TasksSection = GObject.registerClass({
     private _completedChevronIcon!: St.Icon;
     private _completedTasksList!: St.BoxLayout;
     private _completedExpanded!: boolean;
+    // The two styled blocks: "my tasks" (list picker, add form, active tasks
+    // with their subtasks) and "completed" (toggle + completed list).
+    private _mainBlock!: St.BoxLayout;
+    private _completedBlock!: St.BoxLayout;
+    private _blockSpacer!: St.Widget;
+    // Hidden widget carrying GNOME Shell's own `.message` class — the
+    // notification bubble. Its theme node is read back so the blocks follow
+    // whatever color the active shell theme gives notifications.
+    private _blockColorProbe!: St.Widget;
+    private _themeChangedId!: number;
 
     private _addTaskForm!: St.BoxLayout;
     private _addTaskEntry!: St.Entry;
@@ -351,6 +368,9 @@ const TasksSection = GObject.registerClass({
         });
 
         this._taskListDropdownMenu = new PopupMenu.PopupMenu(this._taskListDropdownButton, 0.0, St.Side.TOP);
+        // Opaque background: the shell's translucent menu style blends into the
+        // task rows under it once a blur is applied behind the panel popup.
+        this._taskListDropdownMenu.actor.add_style_class_name('google-tasks-dropdown-menu');
         Main.uiGroup.add_child(this._taskListDropdownMenu.actor);
         this._taskListDropdownMenu.actor.hide();
         this._taskListDropdownMenuManager = new PopupMenu.PopupMenuManager(this);
@@ -383,7 +403,18 @@ const TasksSection = GObject.registerClass({
 
         titleBox.add_child(this._taskListDropdownButton);
         titleBox.add_child(addButton);
-        box.add_child(titleBox);
+
+        // y_expand is set explicitly so the block hugs its content instead of
+        // inheriting the expand flag from the task list inside it; the spacer
+        // below takes the leftover height and keeps "Completed" at the bottom.
+        this._mainBlock = new St.BoxLayout({
+            style_class: 'google-tasks-block google-tasks-block-main',
+            orientation: Clutter.Orientation.VERTICAL,
+            x_expand: true,
+            y_expand: false,
+        });
+        box.add_child(this._mainBlock);
+        this._mainBlock.add_child(titleBox);
 
         this._addTaskForm = new St.BoxLayout({
             style_class: 'google-tasks-add-form',
@@ -460,15 +491,18 @@ const TasksSection = GObject.registerClass({
         this._addTaskForm.add_child(this._addTaskEntry);
         this._addTaskForm.add_child(this._addTaskDescriptionEntry);
         this._addTaskForm.add_child(formButtons);
-        box.add_child(this._addTaskForm);
+        this._mainBlock.add_child(this._addTaskForm);
 
         this._activeTasksList = new St.BoxLayout({
             style_class: 'tasks-list',
             orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
-            y_expand: true,
+            y_expand: false,
         });
-        box.add_child(this._activeTasksList);
+        this._mainBlock.add_child(this._activeTasksList);
+
+        this._blockSpacer = new St.Widget({ y_expand: true });
+        box.add_child(this._blockSpacer);
 
         const completedHeaderContent = new St.BoxLayout({
             x_expand: true,
@@ -510,10 +544,30 @@ const TasksSection = GObject.registerClass({
             visible: false,
         });
 
-        box.add_child(this._completedHeaderButton);
-        box.add_child(this._completedTasksList);
+        this._completedBlock = new St.BoxLayout({
+            style_class: 'google-tasks-block google-tasks-block-completed',
+            orientation: Clutter.Orientation.VERTICAL,
+            x_expand: true,
+            visible: false,
+        });
+        this._completedBlock.add_child(this._completedHeaderButton);
+        this._completedBlock.add_child(this._completedTasksList);
+        box.add_child(this._completedBlock);
+
+        this._blockColorProbe = new St.Widget({ style_class: 'message', visible: false });
+        this.add_child(this._blockColorProbe);
+
+        // Re-read the color whenever the popup opens (cheap, and catches a
+        // theme switched while it was closed) and live on theme changes.
+        this.connect('notify::mapped', () => {
+            if (this.mapped)
+                this._updateBlockStyle();
+        });
+        const themeContext = St.ThemeContext.get_for_stage((globalThis as any).global.stage);
+        this._themeChangedId = themeContext.connect('changed', () => this._updateBlockStyle());
 
         this.connect('destroy', () => {
+            themeContext.disconnect(this._themeChangedId);
             this._taskListDropdownMenu.destroy();
         });
     }
@@ -1421,10 +1475,12 @@ const TasksSection = GObject.registerClass({
         if (tasks.length === 0) {
             this._completedHeaderButton.visible = false;
             this._completedTasksList.visible = false;
+            this._completedBlock.visible = false;
             return;
         }
 
         this._completedHeaderButton.visible = true;
+        this._completedBlock.visible = true;
         this._addCompletedTaskTree(tasks, isTaskExpanded, canUncomplete, onToggleExpand, onUncomplete, onEdit, onDelete, onColorChange);
         this._setCompletedExpanded(this._completedExpanded);
     }
@@ -1484,6 +1540,8 @@ const TasksSection = GObject.registerClass({
         this._activeTasksList.destroy_all_children();
         this._completedTasksList.destroy_all_children();
         this._completedHeaderButton.visible = false;
+        this._completedBlock.visible = false;
+        this._setEmptyStateLayout(false);
         // Only hide the container here — do NOT touch this._completedExpanded.
         // clearTasks() runs at the start of every re-render (which now happens
         // after almost every action thanks to optimistic updates), so resetting
@@ -1537,6 +1595,54 @@ const TasksSection = GObject.registerClass({
         container.add_child(icon);
         container.add_child(label);
         this._activeTasksList.add_child(container);
+        this._setEmptyStateLayout(true);
+    }
+
+    // The placeholder is centered in the free height, so while it is shown the
+    // main block (and the list in it) takes that height instead of the spacer.
+    private _setEmptyStateLayout(empty: boolean) {
+        this._mainBlock.y_expand = empty;
+        this._activeTasksList.y_expand = empty;
+        this._blockSpacer.visible = !empty;
+    }
+
+    // Paints both blocks with the notification bubble's background. With an
+    // opaque theme that is the same solid card color; with a translucent one
+    // (blurred popup) the fill stays translucent, but its alpha is raised to a
+    // floor so the block edge is still visible against the blur, and a slightly
+    // stronger border of the same color outlines it.
+    private _updateBlockStyle() {
+        if (!this._blockColorProbe.get_stage())
+            return;
+
+        let r = 255;
+        let g = 255;
+        let b = 255;
+        let a = 0;
+        let radius = BLOCK_FALLBACK_RADIUS_PX;
+        try {
+            const node = this._blockColorProbe.get_theme_node();
+            const color = node.get_background_color();
+            r = color.red;
+            g = color.green;
+            b = color.blue;
+            a = color.alpha / 255;
+            radius = Math.min(BLOCK_MAX_RADIUS_PX, node.get_border_radius(St.Corner.TOPLEFT));
+        }
+        catch (e) {
+            console.warn(`[google-tasks] could not read notification color: ${e}`);
+        }
+
+        const fillAlpha = Math.max(BLOCK_MIN_FILL_ALPHA, a);
+        const borderAlpha = Math.min(1, fillAlpha + BLOCK_BORDER_ALPHA_EXTRA);
+        const style = `${[
+            `background-color: rgba(${r}, ${g}, ${b}, ${fillAlpha.toFixed(3)})`,
+            `border: 1px solid rgba(${r}, ${g}, ${b}, ${borderAlpha.toFixed(3)})`,
+            `border-radius: ${radius}px`,
+        ].join('; ')};`;
+
+        this._mainBlock.set_style(style);
+        this._completedBlock.set_style(style);
     }
 });
 
