@@ -46,15 +46,72 @@ const MAX_PAGES = 20;
 const TOKEN_EXPIRY_MARGIN_SECONDS = 60;
 const TOKEN_FALLBACK_LIFETIME_SECONDS = 240;
 
+// How long to trust a status/deletion we just made locally over what a
+// reconcile fetch reports, if they disagree. Google's API can briefly return
+// the pre-change state right after a successful write (eventual consistency)
+// — without this, a reconcile landing in that window flips the task back (or
+// resurrects a just-deleted one), then a later reconcile flips it forward
+// again once the read catches up, which reads as the row bouncing on its own.
+const RECONCILE_OVERRIDE_TTL_MS = 30000;
+
 Gio._promisify(Goa.Client, 'new', 'new_finish');
 Gio._promisify(Goa.OAuth2Based.prototype, 'call_get_access_token', 'call_get_access_token_finish');
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async', 'send_and_read_finish');
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Retries a failing network call a few times with backoff before giving up.
+// Transient failures (dropped connections, momentary TLS handshake errors —
+// exactly what shows up in the logs) were previously treated as permanent,
+// triggering an immediate full refetch that rolled the optimistic UI back.
+// A cancelled request (extension disabling mid-call) is never retried — the
+// caller is going away, so waiting out the backoff would only delay teardown.
+async function withRetry<T>(fn: () => Promise<T>, retries = 2, baseDelayMs = 200): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    }
+    catch (e) {
+      lastError = e;
+      if (isCancelledError(e))
+        break;
+      if (attempt < retries)
+        await delay(baseDelayMs * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
 
 export class GoogleTasksManager {
   private _cancellable: Gio.Cancellable;
   private _httpSession: Soup.Session;
   private _accessToken: string | null = null;
   private _accessTokenExpiresAtMs: number = 0;
+
+  // Optimistic state applied on top of every fetch, so a reconcile that lands
+  // while Google's read replicas are still catching up with a just-made
+  // write doesn't visibly flip a row back. Owned here (not by the caller)
+  // because completeTask/uncompleteTask/deleteTask are the only ones who
+  // know when an override should start and when it should be rolled back.
+  private _statusOverrides: Map<string, { status: string; expiresAt: number }> = new Map();
+  private _pendingDeletions: Map<string, number> = new Map();
+
+  // A task just created here can be temporarily missing from a fetch — the
+  // same read-replica lag that motivates _statusOverrides/_pendingDeletions
+  // — which otherwise makes it flicker: shown optimistically, then dropped
+  // by the next reconcile (which rebuilds its list purely from the fetch),
+  // then restored once a later fetch catches up. Held onto until the fetch
+  // agrees or the entry lapses.
+  private _recentlyCreated: Map<string, { task: GoogleTask; expiresAt: number }> = new Map();
+
+  // Serializes mutations per task id: without this, quickly flipping a task
+  // between active and completed fires a completeTask and an uncompleteTask
+  // request in parallel, and if their responses arrive out of send-order the
+  // server ends up in the state opposite of the user's last click.
+  private _mutationQueues: Map<string, Promise<unknown>> = new Map();
 
   constructor() {
     this._cancellable = new Gio.Cancellable();
@@ -92,6 +149,8 @@ export class GoogleTasksManager {
   /**
    * Fetches task lists and all their tasks in one cycle: a single token fetch
    * and a single lists request, rather than each caller re-fetching both.
+   * The result already has locally-known optimistic mutations reconciled in
+   * — see _reconcile().
    *
    * Failures propagate instead of resolving to empty arrays. An empty result
    * and a failed request look identical to the caller otherwise, so a momentary
@@ -117,45 +176,185 @@ export class GoogleTasksManager {
       }
     }));
 
-    return { lists, tasks: tasksByList.flat() };
+    return { lists, tasks: this._reconcile(tasksByList.flat()) };
+  }
+
+  // Applies locally-known optimistic state on top of a fresh fetch: a status
+  // just set by completeTask/uncompleteTask takes precedence over a fetch
+  // that still disagrees, a task just removed by deleteTask stays hidden
+  // until the fetch stops mentioning it or the override lapses, and a task
+  // just made by createTask stays visible even if this particular fetch
+  // doesn't have it yet.
+  private _reconcile(tasks: GoogleTask[]): GoogleTask[] {
+    // The common case: nothing was mutated since the last fetch, so there's
+    // nothing to reconcile. Skip the sweeps and the full-array rebuild below
+    // — this runs on every poll (every REFRESH_INTERVAL_SECONDS), not just
+    // right after a mutation.
+    if (this._statusOverrides.size === 0 && this._pendingDeletions.size === 0 && this._recentlyCreated.size === 0)
+      return tasks;
+
+    const now = Date.now();
+
+    for (const [id, expiresAt] of this._pendingDeletions) {
+      if (now > expiresAt)
+        this._pendingDeletions.delete(id);
+    }
+    for (const [id, entry] of this._recentlyCreated) {
+      if (now > entry.expiresAt)
+        this._recentlyCreated.delete(id);
+    }
+    if (this._pendingDeletions.size > 0 || this._recentlyCreated.size > 0) {
+      const seenIds = new Set(tasks.map(task => task.id));
+      for (const id of [...this._pendingDeletions.keys()]) {
+        if (!seenIds.has(id))
+          this._pendingDeletions.delete(id);
+      }
+      // Seen for real now — the fetched copy (any later edits included)
+      // takes over, so this stops shadowing it.
+      for (const id of [...this._recentlyCreated.keys()]) {
+        if (seenIds.has(id))
+          this._recentlyCreated.delete(id);
+      }
+    }
+
+    // A still-unseen just-created task isn't in `tasks` at all — fold it in
+    // here so the loop below applies the exact same deletion/status handling
+    // to it as to a fetched task (e.g. it was created and then immediately
+    // completed or deleted before any fetch caught up).
+    const candidates = this._recentlyCreated.size > 0
+      ? [...tasks, ...[...this._recentlyCreated.values()].map(entry => entry.task)]
+      : tasks;
+
+    const reconciled: GoogleTask[] = [];
+    for (const task of candidates) {
+      if (this._pendingDeletions.has(task.id))
+        continue;
+
+      let effectiveStatus = task.status;
+      const override = this._statusOverrides.get(task.id);
+      if (override) {
+        if (now > override.expiresAt) {
+          this._statusOverrides.delete(task.id);
+        }
+        else if (task.status !== override.status) {
+          // The fetch disagrees with what was just set — likely a stale
+          // (not-yet-replicated) read. Trust the recent write instead of
+          // visibly flipping the row back.
+          effectiveStatus = override.status;
+        }
+        else {
+          // The fetch now agrees — the server has caught up.
+          this._statusOverrides.delete(task.id);
+        }
+      }
+
+      reconciled.push(effectiveStatus === task.status ? task : { ...task, status: effectiveStatus });
+    }
+    return reconciled;
   }
 
   async createTask(title: string, notes?: string, taskListId?: string, parentTaskId?: string): Promise<GoogleTask> {
-    let resolvedTaskListId = taskListId;
-    if (!resolvedTaskListId) {
-      const lists = await this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`);
-      if (lists.length === 0)
-        throw new Error('No task lists found');
-      resolvedTaskListId = lists[0].id;
-    }
+    // Wraps list-resolution too, not just the final POST: the previous
+    // caller-side retry (before this moved here) covered the whole call.
+    return withRetry(async () => {
+      let resolvedTaskListId = taskListId;
+      if (!resolvedTaskListId) {
+        const lists = await this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`);
+        if (lists.length === 0)
+          throw new Error('No task lists found');
+        resolvedTaskListId = lists[0].id;
+      }
 
-    const parentParam = parentTaskId ? `?parent=${encodeURIComponent(parentTaskId)}` : '';
-    const url = `${TASKS_API}/lists/${encodeURIComponent(resolvedTaskListId)}/tasks${parentParam}`;
-    const body: Record<string, string> = { title };
-    if (notes)
-      body.notes = notes;
+      const parentParam = parentTaskId ? `?parent=${encodeURIComponent(parentTaskId)}` : '';
+      const url = `${TASKS_API}/lists/${encodeURIComponent(resolvedTaskListId)}/tasks${parentParam}`;
+      const body: Record<string, string> = { title };
+      if (notes)
+        body.notes = notes;
 
-    const created = await this._request<GoogleTask>(url, 'POST', body);
-    return { ...created, taskListId: resolvedTaskListId };
+      const created = await this._request<GoogleTask>(url, 'POST', body);
+      const task = { ...created, taskListId: resolvedTaskListId };
+      this._recentlyCreated.set(task.id, { task, expiresAt: Date.now() + RECONCILE_OVERRIDE_TTL_MS });
+      return task;
+    });
   }
 
   async completeTask(taskListId: string, taskId: string): Promise<void> {
-    await this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status: 'completed' });
+    return this._setStatus(taskListId, taskId, 'completed');
   }
 
   async uncompleteTask(taskListId: string, taskId: string): Promise<void> {
-    await this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status: 'needsAction' });
+    return this._setStatus(taskListId, taskId, 'needsAction');
+  }
+
+  private async _setStatus(taskListId: string, taskId: string, status: string): Promise<void> {
+    // Captured by reference so the rollback below only ever clears *this*
+    // call's own override — not one a newer, still-in-flight call for the
+    // same task id (e.g. complete then immediately uncomplete) already
+    // replaced it with while this request was in flight or queued.
+    const override = { status, expiresAt: Date.now() + RECONCILE_OVERRIDE_TTL_MS };
+    this._statusOverrides.set(taskId, override);
+    try {
+      await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status })));
+    }
+    catch (error) {
+      // A failed move looks like it worked, then silently undoes itself once
+      // the override lapses, unless it's dropped right away. Left alone on
+      // cancellation (extension disabling) — destroy() clears it right after.
+      if (!isCancelledError(error) && this._statusOverrides.get(taskId) === override)
+        this._statusOverrides.delete(taskId);
+      throw error;
+    }
   }
 
   async updateTask(taskListId: string, taskId: string, title: string, notes?: string): Promise<void> {
     const body: Record<string, string> = { title };
     if (notes !== undefined)
       body.notes = notes;
-    await this._request(this._taskUrl(taskListId, taskId), 'PATCH', body);
+    await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', body)));
+
+    // Edited right after creation, before any fetch has seen it yet: keep the
+    // remembered copy (see _recentlyCreated) in sync, or a reconcile in that
+    // window would show it with its pre-edit title/notes.
+    const pending = this._recentlyCreated.get(taskId);
+    if (pending)
+      pending.task = { ...pending.task, title, notes };
   }
 
   async deleteTask(taskListId: string, taskId: string): Promise<void> {
-    await this._request(this._taskUrl(taskListId, taskId), 'DELETE');
+    // A status override no longer means anything once the task is gone, and
+    // would otherwise linger in the map until its own TTL.
+    this._statusOverrides.delete(taskId);
+    const deletionExpiresAt = Date.now() + RECONCILE_OVERRIDE_TTL_MS;
+    this._pendingDeletions.set(taskId, deletionExpiresAt);
+    try {
+      await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'DELETE')));
+    }
+    catch (error) {
+      // Same by-reference guard as _setStatus(), against a second concurrent
+      // delete of this id (not reachable today — a deleted row disappears
+      // from the UI immediately — but cheap to make safe either way).
+      if (!isCancelledError(error) && this._pendingDeletions.get(taskId) === deletionExpiresAt)
+        this._pendingDeletions.delete(taskId);
+      throw error;
+    }
+  }
+
+  private _runQueued<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this._mutationQueues.get(taskId) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    // Keep the queue alive regardless of outcome, so a later action on this
+    // same task still waits its turn instead of racing ahead of this one.
+    const queued = run.catch(() => undefined);
+    this._mutationQueues.set(taskId, queued);
+    // Once settled, drop the entry — otherwise every distinct task id ever
+    // mutated stays in the map for the rest of the session. Only if it's
+    // still *this* call's entry: a newer mutation for the same id may have
+    // already replaced it while this one was in flight.
+    queued.finally(() => {
+      if (this._mutationQueues.get(taskId) === queued)
+        this._mutationQueues.delete(taskId);
+    });
+    return run;
   }
 
   private _taskUrl(taskListId: string, taskId: string): string {
@@ -236,6 +435,10 @@ export class GoogleTasksManager {
   destroy() {
     this._invalidateAccessToken();
     this._cancellable.cancel();
+    this._statusOverrides.clear();
+    this._pendingDeletions.clear();
+    this._recentlyCreated.clear();
+    this._mutationQueues.clear();
   }
 }
 
