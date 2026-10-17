@@ -46,12 +46,16 @@ make              # compiles TypeScript and copies assets into dist/
 
 - `bun run build` — compile TypeScript to `dist/`
 - `bun run lint` — lint source; `make pack`/`make install` also run ESLint against `dist/` (`lint-dist`)
+- `bun test` (or `make test`) — unit tests in `tests/`
+- `make check` — type check and tests; `make pack` and `make install` run it first and stop if anything fails
 
 ### Local install & testing
 
 ```sh
-make install      # builds, packs googletasks@boleeinoe.github.io.zip, installs with gnome-extensions
+make install      # type check + tests, then builds, packs googletasks@boleeinoe.github.io.zip, installs with gnome-extensions
 ```
+
+Without a global `bun`, any bun works: `make install BUN="npx -y bun"`.
 
 Restart the shell (**Alt+F2**, type `restart`, Enter) so changes load. Use **Extensions** to enable or disable `Google Tasks`.
 

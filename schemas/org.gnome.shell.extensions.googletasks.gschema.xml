@@ -98,7 +98,19 @@
       <default>12</default>
       <range min="8" max="24"/>
       <summary>Checkmark circle size</summary>
-      <description>Width and height in pixels of the completion circle for leaf tasks and subtasks.</description>
+      <description>Width and height in pixels of the completion circle for tasks.</description>
+    </key>
+    <key name="subtask-radio-size" type="i">
+      <default>9</default>
+      <range min="6" max="24"/>
+      <summary>Subtask checkmark circle size</summary>
+      <description>Width and height in pixels of the completion circle for subtasks.</description>
+    </key>
+    <key name="subtask-levels" type="i">
+      <default>3</default>
+      <range min="2" max="3"/>
+      <summary>Task nesting levels</summary>
+      <description>How many levels tasks can nest: 2 is task and subtask, 3 also allows a subtask of a subtask.</description>
     </key>
     <key name="empty-state-icon" type="s">
       <default>'view-list-symbolic'</default>

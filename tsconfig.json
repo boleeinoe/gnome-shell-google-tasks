@@ -16,7 +16,15 @@
     "src/extension.ts",
     "src/prefs.ts",
     "src/tasksManager.ts",
-    "src/textInteraction.ts"
+    "src/textInteraction.ts",
+    "src/taskStyle.ts",
+    "src/taskTree.ts",
+    "src/retry.ts",
+    "src/links.ts",
+    "src/persistence.ts",
+    "src/settings.ts",
+    "src/i18n.ts",
+    "src/tasksSection.ts"
   ],
   "include": [
     "src/ambient.d.ts"

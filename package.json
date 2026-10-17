@@ -7,7 +7,8 @@
     "lint": "eslint",
     "lint:fix": "eslint --fix",
     "lint:dist": "eslint dist --fix --no-ignore",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "peerDependencies": {
     "typescript": "^5.9.3"

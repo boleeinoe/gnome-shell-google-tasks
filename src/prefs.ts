@@ -1,30 +1,32 @@
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
 import Gtk from 'gi://Gtk';
-
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
-
-const REFRESH_INTERVAL_KEY = 'refresh-interval';
-const TASK_SORT_ORDER_KEY = 'task-sort-order';
-const SHOW_COMPLETED_TASKS_KEY = 'show-completed-tasks';
-const SHOW_TASK_DATE_KEY = 'show-task-date';
-const TASK_TIMEFRAME_KEY = 'task-timeframe';
-const LANGUAGE_KEY = 'language';
-const COLUMN_WIDTH_KEY = 'column-width';
-const CORNER_RADIUS_KEY = 'corner-radius';
-const COMPLETED_RETENTION_MINUTES_KEY = 'completed-retention-minutes';
-const TITLE_FONT_SIZE_KEY = 'title-font-size';
-const DESCRIPTION_FONT_SIZE_KEY = 'description-font-size';
-const TASK_BLOCK_SIZE_KEY = 'task-block-size';
-const SUBTASK_BLOCK_SIZE_KEY = 'subtask-block-size';
-const RADIO_SIZE_KEY = 'radio-size';
-const EMPTY_STATE_ICON_KEY = 'empty-state-icon';
-const EMPTY_STATE_ICON_SIZE_KEY = 'empty-state-icon-size';
-const EMPTY_STATE_FONT_SIZE_KEY = 'empty-state-font-size';
-const EMPTY_STATE_OPACITY_KEY = 'empty-state-opacity';
-const TASK_BLOCKS_ENABLED_KEY = 'task-blocks-enabled';
-const TASK_BLOCKS_OPACITY_KEY = 'task-blocks-opacity';
-const TASK_BLOCKS_EDGE_BLUR_KEY = 'task-blocks-edge-blur';
+import {
+  COLUMN_WIDTH_KEY,
+  COMPLETED_RETENTION_MINUTES_KEY,
+  CORNER_RADIUS_KEY,
+  DESCRIPTION_FONT_SIZE_KEY,
+  EMPTY_STATE_FONT_SIZE_KEY,
+  EMPTY_STATE_ICON_KEY,
+  EMPTY_STATE_ICON_SIZE_KEY,
+  EMPTY_STATE_OPACITY_KEY,
+  LANGUAGE_KEY,
+  RADIO_SIZE_KEY,
+  REFRESH_INTERVAL_KEY,
+  SHOW_COMPLETED_TASKS_KEY,
+  SHOW_TASK_DATE_KEY,
+  SUBTASK_BLOCK_SIZE_KEY,
+  SUBTASK_LEVELS_KEY,
+  SUBTASK_RADIO_SIZE_KEY,
+  TASK_BLOCK_SIZE_KEY,
+  TASK_BLOCKS_EDGE_BLUR_KEY,
+  TASK_BLOCKS_ENABLED_KEY,
+  TASK_BLOCKS_OPACITY_KEY,
+  TASK_SORT_ORDER_KEY,
+  TASK_TIMEFRAME_KEY,
+  TITLE_FONT_SIZE_KEY,
+} from './settings.js';
 
 const SORT_OPTIONS = [
   { id: 'my-order', label: 'My order' },
@@ -275,7 +277,7 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
 
     const radioSizeRow = new Adw.SpinRow({
       title: 'Checkmark circle size',
-      subtitle: 'Width and height in pixels of the completion circle for leaf tasks and subtasks.',
+      subtitle: 'Width and height in pixels of the completion circle for tasks.',
       adjustment: new Gtk.Adjustment({
         lower: 8,
         upper: 24,
@@ -287,11 +289,41 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     });
     settings.bind(RADIO_SIZE_KEY, radioSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
+    const subtaskRadioSizeRow = new Adw.SpinRow({
+      title: 'Subtask checkmark circle size',
+      subtitle: 'Width and height in pixels of the completion circle for subtasks.',
+      adjustment: new Gtk.Adjustment({
+        lower: 6,
+        upper: 24,
+        step_increment: 1,
+        page_increment: 2,
+      }),
+      digits: 0,
+      numeric: true,
+    });
+    settings.bind(SUBTASK_RADIO_SIZE_KEY, subtaskRadioSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+
+    const subtaskLevelsRow = new Adw.SpinRow({
+      title: 'Task nesting levels',
+      subtitle: '2: task and subtask. 3: a subtask can have its own subtasks.',
+      adjustment: new Gtk.Adjustment({
+        lower: 2,
+        upper: 3,
+        step_increment: 1,
+        page_increment: 1,
+      }),
+      digits: 0,
+      numeric: true,
+    });
+    settings.bind(SUBTASK_LEVELS_KEY, subtaskLevelsRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+
     typographyGroup.add(titleFontSizeRow);
     typographyGroup.add(descriptionFontSizeRow);
     typographyGroup.add(taskBlockSizeRow);
     typographyGroup.add(subtaskBlockSizeRow);
     typographyGroup.add(radioSizeRow);
+    typographyGroup.add(subtaskRadioSizeRow);
+    typographyGroup.add(subtaskLevelsRow);
     page.add(typographyGroup);
 
     const emptyStateGroup = new Adw.PreferencesGroup({

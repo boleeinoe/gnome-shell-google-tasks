@@ -4,6 +4,7 @@ import GLib from 'gi://GLib';
 import Goa from 'gi://Goa';
 // @ts-expect-error: Soup types are not available
 import Soup from 'gi://Soup';
+import { HttpError, NOT_PROCESSED_HTTP_STATUSES, RETRYABLE_HTTP_STATUSES, withRetry } from './retry.js';
 
 export interface GoogleTask {
   id: string;
@@ -58,31 +59,33 @@ Gio._promisify(Goa.Client, 'new', 'new_finish');
 Gio._promisify(Goa.OAuth2Based.prototype, 'call_get_access_token', 'call_get_access_token_finish');
 Gio._promisify(Soup.Session.prototype, 'send_and_read_async', 'send_and_read_finish');
 
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+// Whether a failed request is worth another attempt when repeating it is
+// harmless (GET, PATCH, DELETE): network-level failures and transient HTTP
+// statuses. Never a cancellation (the extension is going away) and never a
+// status that fails the same way every time (400, 403, 404...).
+function isTransientError(error: unknown): boolean {
+  if (isCancelledError(error))
+    return false;
+  if (error instanceof HttpError)
+    return RETRYABLE_HTTP_STATUSES.has(error.status);
+  return error instanceof GLib.Error;
 }
 
-// Retries a failing network call a few times with backoff before giving up.
-// Transient failures (dropped connections, momentary TLS handshake errors —
-// exactly what shows up in the logs) were previously treated as permanent,
-// triggering an immediate full refetch that rolled the optimistic UI back.
-// A cancelled request (extension disabling mid-call) is never retried — the
-// caller is going away, so waiting out the backoff would only delay teardown.
-async function withRetry<T>(fn: () => Promise<T>, retries = 2, baseDelayMs = 200): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fn();
-    }
-    catch (e) {
-      lastError = e;
-      if (isCancelledError(e))
-        break;
-      if (attempt < retries)
-        await delay(baseDelayMs * (attempt + 1));
-    }
-  }
-  throw lastError;
+// Whether a failed request certainly never reached Google, so even a POST can
+// be sent again without creating the task twice: the name didn't resolve, the
+// connection or the TLS handshake failed, or the server said it didn't act on
+// it. A timeout or a dropped connection may come after the server already
+// created the task, so those are not resent.
+function isNotSentError(error: unknown): boolean {
+  if (error instanceof HttpError)
+    return NOT_PROCESSED_HTTP_STATUSES.has(error.status);
+  if (!(error instanceof GLib.Error))
+    return false;
+  if (error.domain === Gio.resolver_error_quark() || error.domain === Gio.tls_error_quark())
+    return true;
+  return error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CONNECTION_REFUSED)
+    || error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.HOST_UNREACHABLE)
+    || error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.NETWORK_UNREACHABLE);
 }
 
 export class GoogleTasksManager {
@@ -90,6 +93,10 @@ export class GoogleTasksManager {
   private _httpSession: Soup.Session;
   private _accessToken: string | null = null;
   private _accessTokenExpiresAtMs: number = 0;
+  // A token fetch in flight, shared by every request that needs a token
+  // meanwhile: the per-list fetches run in parallel, and without this an
+  // expired token meant one Online Accounts round-trip per list.
+  private _accessTokenRequest: Promise<string> | null = null;
 
   // Optimistic state applied on top of every fetch, so a reconcile that lands
   // while Google's read replicas are still catching up with a just-made
@@ -118,10 +125,21 @@ export class GoogleTasksManager {
     this._httpSession = new Soup.Session();
   }
 
-  private async _getAccessToken(): Promise<string> {
+  private _getAccessToken(): Promise<string> {
     if (this._accessToken && Date.now() < this._accessTokenExpiresAtMs)
-      return this._accessToken;
+      return Promise.resolve(this._accessToken);
+    if (!this._accessTokenRequest) {
+      const request = this._fetchAccessToken();
+      this._accessTokenRequest = request;
+      request.then(() => undefined, () => undefined).finally(() => {
+        if (this._accessTokenRequest === request)
+          this._accessTokenRequest = null;
+      });
+    }
+    return this._accessTokenRequest;
+  }
 
+  private async _fetchAccessToken(): Promise<string> {
     const client = await Goa.Client.new(this._cancellable);
     const accounts = client.get_accounts();
     const googleAccount = accounts.find((acc: any) => acc.get_account().provider_type === 'google');
@@ -141,9 +159,21 @@ export class GoogleTasksManager {
     return accessToken;
   }
 
-  private _invalidateAccessToken() {
+  // Drops the cached token, but only if it's still the one that was rejected:
+  // parallel requests failing with the same stale token would otherwise each
+  // throw away the fresh one the first of them already fetched.
+  private _invalidateAccessToken(rejected?: string) {
+    if (rejected !== undefined && this._accessToken !== rejected)
+      return;
     this._accessToken = null;
     this._accessTokenExpiresAtMs = 0;
+  }
+
+  private _retry<T>(fn: () => Promise<T>, idempotent = true): Promise<T> {
+    return withRetry(fn, {
+      shouldRetry: idempotent ? isTransientError : isNotSentError,
+      isCancelled: () => this._cancellable.is_cancelled(),
+    });
   }
 
   /**
@@ -157,8 +187,9 @@ export class GoogleTasksManager {
    * network hiccup would blank the panel and the next refresh would fill it
    * back in — which reads as tasks flickering in and out.
    */
-  async getListsAndTasks(includeCompleted: boolean = false): Promise<{ lists: GoogleTaskList[]; tasks: GoogleTask[] }> {
-    const lists = await this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`);
+  async getListsAndTasks(includeCompleted: boolean = false): Promise<{ lists: GoogleTaskList[]; tasks: GoogleTask[]; failedListIds: string[] }> {
+    const lists = await this._retry(() => this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`));
+    const failedListIds: string[] = [];
 
     const showCompleted = includeCompleted ? 'true' : 'false';
     const tasksByList = await Promise.all(lists.map(async (list) => {
@@ -166,17 +197,22 @@ export class GoogleTasksManager {
       // explicitly cleared from a completed list, not merely "completed".
       const url = `${TASKS_API}/lists/${encodeURIComponent(list.id)}/tasks?showCompleted=${showCompleted}&showHidden=false`;
       try {
-        const tasks = await this._fetchAllPages<GoogleTask>(url);
+        const tasks = await this._retry(() => this._fetchAllPages<GoogleTask>(url));
         return tasks.map(task => ({ ...task, taskListId: list.id }));
       }
       catch (error) {
-        // One unreadable list shouldn't cost the user the others.
-        console.error(`Google Tasks: Failed to fetch tasks for list ${list.title}: ${describeError(error)}`);
+        if (isCancelledError(error))
+          throw error;
+        // One unreadable list shouldn't cost the user the others. It's
+        // reported back, so the caller keeps what it already had for that
+        // list instead of reading the empty result as "all tasks deleted".
+        console.error(`Google Tasks: Failed to fetch tasks for list ${list.id}: ${describeError(error)}`);
+        failedListIds.push(list.id);
         return [] as GoogleTask[];
       }
     }));
 
-    return { lists, tasks: this._reconcile(tasksByList.flat()) };
+    return { lists, tasks: this._reconcile(tasksByList.flat()), failedListIds };
   }
 
   // Applies locally-known optimistic state on top of a fresh fetch: a status
@@ -195,6 +231,12 @@ export class GoogleTasksManager {
 
     const now = Date.now();
 
+    // Overrides of tasks that no longer show up in any fetch would otherwise
+    // only be dropped when that task is seen again.
+    for (const [id, override] of this._statusOverrides) {
+      if (now > override.expiresAt)
+        this._statusOverrides.delete(id);
+    }
     for (const [id, expiresAt] of this._pendingDeletions) {
       if (now > expiresAt)
         this._pendingDeletions.delete(id);
@@ -254,28 +296,30 @@ export class GoogleTasksManager {
   }
 
   async createTask(title: string, notes?: string, taskListId?: string, parentTaskId?: string): Promise<GoogleTask> {
-    // Wraps list-resolution too, not just the final POST: the previous
-    // caller-side retry (before this moved here) covered the whole call.
-    return withRetry(async () => {
-      let resolvedTaskListId = taskListId;
-      if (!resolvedTaskListId) {
-        const lists = await this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`);
-        if (lists.length === 0)
-          throw new Error('No task lists found');
-        resolvedTaskListId = lists[0].id;
-      }
+    let resolvedTaskListId = taskListId;
+    if (!resolvedTaskListId) {
+      const lists = await this._retry(() => this._fetchAllPages<GoogleTaskList>(`${TASKS_API}/users/@me/lists`));
+      if (lists.length === 0)
+        throw new Error('No task lists found');
+      resolvedTaskListId = lists[0].id;
+    }
+    const listId = resolvedTaskListId;
 
+    // POST isn't idempotent: resent after a timeout or a dropped connection,
+    // it can create the task twice. Only failures that certainly never
+    // reached Google are retried (see isNotSentError()).
+    return this._retry(async () => {
       const parentParam = parentTaskId ? `?parent=${encodeURIComponent(parentTaskId)}` : '';
-      const url = `${TASKS_API}/lists/${encodeURIComponent(resolvedTaskListId)}/tasks${parentParam}`;
+      const url = `${TASKS_API}/lists/${encodeURIComponent(listId)}/tasks${parentParam}`;
       const body: Record<string, string> = { title };
       if (notes)
         body.notes = notes;
 
       const created = await this._request<GoogleTask>(url, 'POST', body);
-      const task = { ...created, taskListId: resolvedTaskListId };
+      const task = { ...created, taskListId: listId };
       this._recentlyCreated.set(task.id, { task, expiresAt: Date.now() + RECONCILE_OVERRIDE_TTL_MS });
       return task;
-    });
+    }, false);
   }
 
   async completeTask(taskListId: string, taskId: string): Promise<void> {
@@ -294,7 +338,7 @@ export class GoogleTasksManager {
     const override = { status, expiresAt: Date.now() + RECONCILE_OVERRIDE_TTL_MS };
     this._statusOverrides.set(taskId, override);
     try {
-      await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status })));
+      await this._runQueued(taskId, () => this._retry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', { status })));
     }
     catch (error) {
       // A failed move looks like it worked, then silently undoes itself once
@@ -310,7 +354,7 @@ export class GoogleTasksManager {
     const body: Record<string, string> = { title };
     if (notes !== undefined)
       body.notes = notes;
-    await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', body)));
+    await this._runQueued(taskId, () => this._retry(() => this._request(this._taskUrl(taskListId, taskId), 'PATCH', body)));
 
     // Edited right after creation, before any fetch has seen it yet: keep the
     // remembered copy (see _recentlyCreated) in sync, or a reconcile in that
@@ -327,7 +371,20 @@ export class GoogleTasksManager {
     const deletionExpiresAt = Date.now() + RECONCILE_OVERRIDE_TTL_MS;
     this._pendingDeletions.set(taskId, deletionExpiresAt);
     try {
-      await this._runQueued(taskId, () => withRetry(() => this._request(this._taskUrl(taskListId, taskId), 'DELETE')));
+      await this._runQueued(taskId, () => this._retry(async () => {
+        try {
+          await this._request(this._taskUrl(taskListId, taskId), 'DELETE');
+        }
+        catch (error) {
+          // Already gone is what a delete wants: Google removes subtasks
+          // along with their parent, and a retried delete that went through
+          // the first time answers 404 too. Failing here rolled the
+          // tombstone back and briefly brought the row back.
+          if (error instanceof HttpError && (error.status === 404 || error.status === 410))
+            return;
+          throw error;
+        }
+      }));
     }
     catch (error) {
       // Same by-reference guard as _setStatus(), against a second concurrent
@@ -382,16 +439,17 @@ export class GoogleTasksManager {
   }
 
   private async _request<T>(url: string, method: string = 'GET', body?: object): Promise<T> {
-    const response = await this._send<T>(url, method, body, await this._getAccessToken());
+    const token = await this._getAccessToken();
+    const response = await this._send<T>(url, method, body, token);
     if (response.status !== 401)
       return response.result;
 
     // A cached token can expire early, or be revoked outright, so a single
     // unauthorized reply earns a fresh token and one retry before giving up.
-    this._invalidateAccessToken();
+    this._invalidateAccessToken(token);
     const retry = await this._send<T>(url, method, body, await this._getAccessToken());
     if (retry.status === 401)
-      throw new Error(`HTTP 401: Unauthorized (${method} ${url})`);
+      throw new HttpError(401, `HTTP 401: Unauthorized (${method} ${url})`);
     return retry.result;
   }
 
@@ -418,7 +476,7 @@ export class GoogleTasksManager {
       // Google explains itself in the response body: quota exceeded, invalid
       // id, and so on. Carrying it along turns a bare "HTTP 400" in the journal
       // into something actionable.
-      throw new Error(`HTTP ${status}: ${message.get_reason_phrase()}${text ? ` — ${text.slice(0, 300)}` : ''}`);
+      throw new HttpError(status, `HTTP ${status}: ${message.get_reason_phrase()}${text ? ` — ${text.slice(0, 300)}` : ''}`);
     }
 
     if (!text)
@@ -434,7 +492,9 @@ export class GoogleTasksManager {
 
   destroy() {
     this._invalidateAccessToken();
+    this._accessTokenRequest = null;
     this._cancellable.cancel();
+    this._httpSession.abort();
     this._statusOverrides.clear();
     this._pendingDeletions.clear();
     this._recentlyCreated.clear();
