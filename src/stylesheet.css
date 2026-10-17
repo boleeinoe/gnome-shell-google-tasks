@@ -23,27 +23,15 @@
 }
 
 .task-box {
-    /* Same padding on both sides. A colored row's accent is a separate stripe
-       laid over this padding (see .task-color-stripe), not a left border: St
-       can't draw a one-sided border on a rounded box. */
+    /* Same padding on both sides; a colored row is a rounded fill, never a
+       one-sided border (St draws a crescent in the rounded corner). */
     padding: 4px 8px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-/* Everything in a row after the accent stripe. The gap lives here, not on
-   .task-box, so the stripe can sit right next to the content. */
+/* Everything in a row: circle, text, actions. */
 .task-row-content {
     spacing: 12px;
-}
-
-/* Accent of a colored task row: a thin rounded bar at the row's left edge,
-   color set inline. A colored row's left padding is cut to 2px (see
-   buildTaskRowStyle), so 2 + 3 + 3 puts the content at the same 8px as on
-   an uncolored row. */
-.task-color-stripe {
-    width: 3px;
-    margin: 6px 3px 6px 0;
-    border-radius: 2px;
 }
 
 .task-box.task-box-subtask {

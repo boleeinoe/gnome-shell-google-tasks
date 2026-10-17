@@ -23,8 +23,6 @@ export const TASK_COLOR_MIX_OWN = 0.32;
 export const TASK_COLOR_MIX_INHERITED = 0.22;
 export const TASK_COLOR_FORM_MIX = 0.2;
 export const TASK_COLOR_FILL_ALPHA = 0.94;
-export const TASK_COLOR_STRIPE_ALPHA_OWN = 1;
-export const TASK_COLOR_STRIPE_ALPHA_INHERITED = 0.45;
 export const TASK_COLOR_BASE_DARK: Rgb = { r: 40, g: 40, b: 40 };
 export const TASK_COLOR_BASE_LIGHT: Rgb = { r: 246, g: 246, b: 246 };
 
@@ -47,11 +45,6 @@ export function blockHeadingFontSizePx(titleFontSizePx: number): number {
 // Each nesting level shifts a row (and its inline forms) this far right, so a
 // subtask sits under its parent's title and a sub-subtask one step further.
 export const SUBTASK_INDENT_PX = 24;
-
-// Left padding of a colored row: its accent stripe (3px wide, 3px gap after
-// it, see .task-color-stripe) fills the rest, so the content starts at the
-// same 8px as on an uncolored row.
-export const COLORED_ROW_PADDING_LEFT_PX = 2;
 
 export function subtaskIndentPx(depth: number): number {
   return Math.max(0, Math.round(depth)) * SUBTASK_INDENT_PX;
@@ -117,14 +110,12 @@ export interface TaskRowStyleOptions {
 export interface TaskRowStyle {
   // Inline style for the row box.
   style: string;
-  // Inline style for the accent stripe actor, or null for an uncolored row.
-  stripeStyle: string | null;
 }
 
-// A row's inline style. A colored row has no borders at all (its accent is a
-// separate stripe actor): St can't draw a one-sided border on a rounded box —
-// the accent went missing and the corner showed a light crescent. Subtasks
-// are shifted right by their depth.
+// A row's inline style. A colored row is just a rounded fill, with no border
+// or accent bar: St can't draw a one-sided border on a rounded box (a light
+// crescent showed in the corner), and a separate accent bar added nothing the
+// fill doesn't already say. Subtasks are shifted right by their depth.
 export function buildTaskRowStyle(options: TaskRowStyleOptions): TaskRowStyle {
   const parts = [
     `padding-top: ${options.blockSizePx}px`,
@@ -133,7 +124,6 @@ export function buildTaskRowStyle(options: TaskRowStyleOptions): TaskRowStyle {
   const indent = subtaskIndentPx(options.depth ?? 0);
   if (indent > 0)
     parts.push(`margin-left: ${indent}px`);
-  let stripeStyle: string | null = null;
   if (options.colorHex) {
     const own = options.isOwnColor ?? true;
     const fill = taskColorFill(
@@ -145,10 +135,8 @@ export function buildTaskRowStyle(options: TaskRowStyleOptions): TaskRowStyle {
     parts.push(`background-color: ${rgbaCss(fill)}`);
     parts.push('border: none');
     parts.push(`border-radius: ${options.cornerRadiusPx}px`);
-    parts.push(`padding-left: ${COLORED_ROW_PADDING_LEFT_PX}px`);
-    stripeStyle = `background-color: ${hexToRgba(options.colorHex, own ? TASK_COLOR_STRIPE_ALPHA_OWN : TASK_COLOR_STRIPE_ALPHA_INHERITED)};`;
   }
-  return { style: `${parts.join('; ')};`, stripeStyle };
+  return { style: `${parts.join('; ')};` };
 }
 
 // Inline edit/add-subtask form under a colored row: same treatment as the

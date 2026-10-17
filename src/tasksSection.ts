@@ -785,18 +785,11 @@ export const TasksSection = GObject.registerClass({
     const effectiveColor = task.id ? this._effectiveTaskColors.get(task.id) : undefined;
 
     // The row is the box itself, laid out like any other child of the task
-    // list (full width, natural height). Inside it: the accent stripe of a
-    // colored task, then everything else in `content`. The stripe is its own
-    // actor rather than a left border: St can't draw a one-sided border on
-    // a rounded box — the stripe went missing and the corner showed a light
-    // crescent where the left and bottom borders met.
-    //
-    // It used to be overlaid on the box through a BinLayout wrapper, with
-    // y_expand on the stripe. Expand flags propagate up the actor tree, so
-    // the whole row claimed spare height (a lone completed task filled its
-    // block, stripe included) and the wrapper got centered at its natural
-    // width instead of spanning the list. Keeping the stripe a plain child
-    // that fills the box's height (y_align FILL, no expand) avoids both.
+    // list (full width, natural height), with its contents in `content`.
+    // No wrapper actor around it and nothing with y_expand inside it: expand
+    // flags propagate up the actor tree, and a wrapper with an expanding
+    // child once made a lone completed task fill its whole block and left
+    // rows centered at their natural width.
     const content = new St.BoxLayout({
       style_class: 'task-row-content',
       orientation: Clutter.Orientation.HORIZONTAL,
@@ -816,16 +809,6 @@ export const TasksSection = GObject.registerClass({
       depth,
     });
     box.set_style(rowStyle.style);
-    if (rowStyle.stripeStyle) {
-      const stripe = new St.Widget({
-        style_class: 'task-color-stripe',
-        x_expand: false,
-        y_expand: false,
-        y_align: Clutter.ActorAlign.FILL,
-      });
-      stripe.set_style(rowStyle.stripeStyle);
-      box.add_child(stripe);
-    }
     box.add_child(content);
 
     if (isPending)

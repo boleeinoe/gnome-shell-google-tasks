@@ -7,7 +7,6 @@ import {
   buildMenuStyles,
   buildTaskFormStyle,
   buildTaskRowStyle,
-  COLORED_ROW_PADDING_LEFT_PX,
   DEFAULT_RADIO_SIZE_PX,
   DEFAULT_SUBTASK_RADIO_SIZE_PX,
   parseHex,
@@ -124,29 +123,24 @@ describe('buildTaskRowStyle', () => {
     expect(subtaskIndentPx(2)).toBe(2 * SUBTASK_INDENT_PX);
   });
 
-  it('starts a colored row\'s content where an uncolored one\'s starts', () => {
-    // Uncolored: 8px of padding. Colored: reduced padding + 3px stripe + 3px gap.
-    expect(colored.style).toContain(`padding-left: ${COLORED_ROW_PADDING_LEFT_PX}px`);
-    expect(COLORED_ROW_PADDING_LEFT_PX + 3 + 3).toBe(8);
-    expect(plain.style).not.toContain('padding-left');
+  it('keeps a colored row\'s padding the same as an uncolored one\'s', () => {
+    for (const { style } of [colored, inherited, plain])
+      expect(style).not.toContain('padding-left');
   });
 
-  it('rounds and fills a colored row, with a separate stripe for the accent', () => {
+  it('rounds and fills a colored row, with no accent bar', () => {
     expect(colored.style).toContain('border-radius: 6px');
     expect(colored.style).toContain('background-color');
-    expect(colored.stripeStyle).not.toBeNull();
-    expect(rgbaOf(colored.stripeStyle!).a).toBe(1);
+    expect(Object.keys(colored)).toEqual(['style']);
   });
 
   it('paints an inherited color lighter than an own color', () => {
-    expect(rgbaOf(inherited.stripeStyle!).a).toBeLessThan(1);
     expect(chroma(rgbaOf(inherited.style))).toBeLessThan(chroma(rgbaOf(colored.style)));
   });
 
-  it('leaves an uncolored row transparent, unrounded and without a stripe', () => {
+  it('leaves an uncolored row transparent and unrounded', () => {
     expect(plain.style).not.toContain('background-color');
     expect(plain.style).not.toContain('border-radius');
-    expect(plain.stripeStyle).toBeNull();
   });
 
   it('applies the block size as vertical padding', () => {

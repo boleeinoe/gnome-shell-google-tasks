@@ -114,7 +114,7 @@ describe('stylesheet', () => {
       expect(decl(selector, 'margin-left')).toBeUndefined();
   });
 
-  it('puts the row gap after the stripe, not before it', () => {
+  it('keeps the row gap on the row content', () => {
     expect(decl('.task-box', 'spacing')).toBeUndefined();
     expect(decl('.task-row-content', 'spacing')).toBeDefined();
   });
@@ -125,16 +125,12 @@ describe('stylesheet', () => {
     const createRow = sectionTs.slice(sectionTs.indexOf('_createTaskRow('), sectionTs.indexOf('addTask('));
     expect(createRow).toMatch(/\n {4}return box;\n/);
     expect(createRow).not.toMatch(/return row;/);
-    // Expand flags propagate up the actor tree: a y_expand stripe made the
-    // whole row claim spare height (a lone completed task filled its block).
-    const stripe = createRow.match(/style_class: 'task-color-stripe',[\s\S]*?\}\);/)?.[0] ?? '';
-    expect(stripe).not.toBe('');
-    expect(stripe).not.toMatch(/y_expand: true/);
-    expect(stripe).not.toMatch(/x_expand: true/);
+    expect(createRow).not.toMatch(/const row = new St\.Widget/);
   });
 
-  it('defines the accent stripe used for colored rows', () => {
-    expect(decl('.task-color-stripe', 'width')).toBeDefined();
+  it('has no accent stripe on task rows', () => {
+    expect(css).not.toContain('task-color-stripe');
+    expect(sectionTs).not.toMatch(/stripe/i);
   });
 
   it('color swatches match the colors painted on the rows', () => {
