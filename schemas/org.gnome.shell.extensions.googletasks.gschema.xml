@@ -112,6 +112,16 @@
       <summary>Task nesting levels</summary>
       <description>How many levels tasks can nest: 2 is task and subtask, 3 also allows a subtask of a subtask.</description>
     </key>
+    <key name="subtask-levels-request" type="s">
+      <default>''</default>
+      <summary>Requested nesting levels (internal)</summary>
+      <description>Written by the preferences when the nesting limit is lowered: JSON with a request id and the new limit. The extension checks every task list and only then changes subtask-levels.</description>
+    </key>
+    <key name="subtask-levels-result" type="s">
+      <default>''</default>
+      <summary>Result of a nesting-levels request (internal)</summary>
+      <description>Written by the extension in answer to subtask-levels-request: JSON saying whether the new limit was applied, and if not, which tasks are nested too deep.</description>
+    </key>
     <key name="empty-state-icon" type="s">
       <default>'view-list-symbolic'</default>
       <summary>Empty state icon</summary>

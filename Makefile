@@ -3,7 +3,8 @@ UUID = googletasks@boleeinoe.github.io
 BUN ?= bun
 SCHEMA_XML = schemas/org.gnome.shell.extensions.googletasks.gschema.xml
 DIST_SCHEMA_XML = dist/schemas/org.gnome.shell.extensions.googletasks.gschema.xml
-DIST_ASSETS = dist/metadata.json dist/stylesheet.css $(DIST_SCHEMA_XML)
+DIST_SCHEMA_COMPILED = dist/schemas/gschemas.compiled
+DIST_ASSETS = dist/metadata.json dist/stylesheet.css $(DIST_SCHEMA_XML) $(DIST_SCHEMA_COMPILED)
 
 .PHONY: all test typecheck check lint-dist pack install clean
 
@@ -24,6 +25,11 @@ dist/stylesheet.css: src/stylesheet.css
 $(DIST_SCHEMA_XML): $(SCHEMA_XML)
 	@mkdir -p dist/schemas
 	@cp $(SCHEMA_XML) $(DIST_SCHEMA_XML)
+
+# Compiled next to the XML so a zip never carries a stale gschemas.compiled
+# (one missing a new key makes getSettings() fail on that key).
+$(DIST_SCHEMA_COMPILED): $(DIST_SCHEMA_XML)
+	glib-compile-schemas --strict dist/schemas
 
 $(UUID).zip: check lint-dist dist/extension.js $(DIST_ASSETS)
 	@rm -f $(UUID).zip

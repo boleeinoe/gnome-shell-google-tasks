@@ -42,6 +42,11 @@ export const SUBTASK_BLOCK_SIZE_KEY = 'subtask-block-size';
 export const RADIO_SIZE_KEY = 'radio-size';
 export const SUBTASK_RADIO_SIZE_KEY = 'subtask-radio-size';
 export const SUBTASK_LEVELS_KEY = 'subtask-levels';
+// Lowering subtask-levels goes through the extension, which checks every
+// task list first (see nestingCheck.ts): the preferences write a request,
+// the extension answers in the result key.
+export const SUBTASK_LEVELS_REQUEST_KEY = 'subtask-levels-request';
+export const SUBTASK_LEVELS_RESULT_KEY = 'subtask-levels-result';
 export const EMPTY_STATE_ICON_KEY = 'empty-state-icon';
 export const EMPTY_STATE_ICON_SIZE_KEY = 'empty-state-icon-size';
 export const EMPTY_STATE_FONT_SIZE_KEY = 'empty-state-font-size';

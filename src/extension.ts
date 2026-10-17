@@ -1,4 +1,5 @@
 import type { Lang } from './i18n.js';
+import type { LevelsResult } from './nestingCheck.js';
 import type { GoogleTask, GoogleTaskList } from './tasksManager.js';
 import type { TasksSectionInstance } from './tasksSection.js';
 import type { TaskSortOrder, TaskTimeframe } from './taskTree.js';
@@ -12,6 +13,7 @@ import {
   t,
   textStrings,
 } from './i18n.js';
+import { buildRejection, findNestingOffenders, parseLevelsRequest, serializeLevelsResult } from './nestingCheck.js';
 import { parseCreationTimes, parseTaskColors, pruneToLiveIds, serializeMap } from './persistence.js';
 import {
   COLUMN_WIDTH_KEY,
@@ -43,6 +45,8 @@ import {
   SHOW_TASK_DATE_KEY,
   SUBTASK_BLOCK_SIZE_KEY,
   SUBTASK_LEVELS_KEY,
+  SUBTASK_LEVELS_REQUEST_KEY,
+  SUBTASK_LEVELS_RESULT_KEY,
   SUBTASK_RADIO_SIZE_KEY,
   TASK_BLOCK_SIZE_KEY,
   TASK_BLOCKS_EDGE_BLUR_KEY,
@@ -98,6 +102,9 @@ export default class GoogleTasksExtension extends Extension {
   private _settings: Gio.Settings | null = null;
   // Every changed:: handler on this._settings, disconnected together.
   private _settingsSignalIds: number[] = [];
+  // Id of the latest nesting-levels request from the preferences; a check
+  // still running for an older one drops its answer.
+  private _levelsRequestId: string | null = null;
   // Local caches with unsaved changes, written together (see _scheduleCacheSave()).
   private _dirtyCaches: Set<'colors' | 'times'> = new Set();
   private _cacheSaveTimerId: number | null = null;
@@ -297,6 +304,12 @@ export default class GoogleTasksExtension extends Extension {
       }));
       this._settingsSignalIds.push(this._settings.connect(`changed::${EMPTY_STATE_OPACITY_KEY}`, () => {
         this._scheduleRenderOnly();
+      }));
+      // A request left over from before this enable() was answered (or
+      // timed out in the preferences) long ago; only new ones are handled.
+      this._levelsRequestId = parseLevelsRequest(this._settings.get_string(SUBTASK_LEVELS_REQUEST_KEY))?.id ?? null;
+      this._settingsSignalIds.push(this._settings.connect(`changed::${SUBTASK_LEVELS_REQUEST_KEY}`, () => {
+        this._onSubtaskLevelsRequest();
       }));
       for (const key of [SUBTASK_RADIO_SIZE_KEY, SUBTASK_LEVELS_KEY]) {
         this._settingsSignalIds.push(this._settings.connect(`changed::${key}`, () => {
@@ -571,6 +584,57 @@ export default class GoogleTasksExtension extends Extension {
     if (!this._settings)
       return DEFAULT_SUBTASK_LEVELS;
     return normalizeSubtaskLevels(this._settings.get_int(SUBTASK_LEVELS_KEY));
+  }
+
+  // The preferences asked for a new nesting limit. Raising it can't leave
+  // any task too deep, so it's applied at once; lowering it is applied only
+  // if no task in any list is nested deeper than the new limit. Every list
+  // is fetched fresh (completed tasks included), and if any list fails to
+  // load the change is refused rather than checked against partial data.
+  async _onSubtaskLevelsRequest() {
+    if (!this._settings)
+      return;
+    const request = parseLevelsRequest(this._settings.get_string(SUBTASK_LEVELS_REQUEST_KEY));
+    if (!request || request.id === this._levelsRequestId)
+      return;
+    this._levelsRequestId = request.id;
+    const levels = normalizeSubtaskLevels(request.levels);
+
+    const answer = (result: LevelsResult) => {
+      if (!this._settings || this._levelsRequestId !== request.id)
+        return;
+      if (result.status === 'applied')
+        this._settings.set_int(SUBTASK_LEVELS_KEY, levels);
+      this._settings.set_string(SUBTASK_LEVELS_RESULT_KEY, serializeLevelsResult(result));
+    };
+
+    if (levels >= this._getSubtaskLevels()) {
+      answer({ id: request.id, status: 'applied', levels });
+      return;
+    }
+    if (!this._tasksManager) {
+      answer({ id: request.id, status: 'failed', levels, failedLists: [] });
+      return;
+    }
+
+    try {
+      const { lists, tasks, failedListIds } = await this._tasksManager.getListsAndTasks(true);
+      if (failedListIds.length > 0) {
+        const titles = failedListIds.map(id => lists.find(list => list.id === id)?.title || id);
+        answer({ id: request.id, status: 'failed', levels, failedLists: titles });
+        return;
+      }
+      const offenders = findNestingOffenders(lists, tasks, levels);
+      answer(offenders.length > 0
+        ? buildRejection(request.id, levels, offenders)
+        : { id: request.id, status: 'applied', levels });
+    }
+    catch (e) {
+      if (isCancelledError(e))
+        return;
+      console.error(`[google-tasks] nesting check failed: ${e}`);
+      answer({ id: request.id, status: 'failed', levels, failedLists: [], detail: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   _getEmptyStateIcon(): string {
@@ -1360,6 +1424,7 @@ export default class GoogleTasksExtension extends Extension {
     for (const id of this._settingsSignalIds)
       this._settings?.disconnect(id);
     this._settingsSignalIds = [];
+    this._levelsRequestId = null;
 
     this._settings = null;
     this._selectedTaskListId = null;

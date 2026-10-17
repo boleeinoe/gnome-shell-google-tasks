@@ -1,7 +1,16 @@
+import type { LevelsMessage } from './nestingCheck.js';
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import Gtk from 'gi://Gtk';
 import { ExtensionPreferences } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
+import {
+  describeLevelsProblem,
+  describeLevelsTimeout,
+  LEVELS_CHECK_TIMEOUT_SECONDS,
+  parseLevelsResult,
+  serializeLevelsRequest,
+} from './nestingCheck.js';
 import {
   COLUMN_WIDTH_KEY,
   COMPLETED_RETENTION_MINUTES_KEY,
@@ -18,6 +27,8 @@ import {
   SHOW_TASK_DATE_KEY,
   SUBTASK_BLOCK_SIZE_KEY,
   SUBTASK_LEVELS_KEY,
+  SUBTASK_LEVELS_REQUEST_KEY,
+  SUBTASK_LEVELS_RESULT_KEY,
   SUBTASK_RADIO_SIZE_KEY,
   TASK_BLOCK_SIZE_KEY,
   TASK_BLOCKS_EDGE_BLUR_KEY,
@@ -27,6 +38,7 @@ import {
   TASK_TIMEFRAME_KEY,
   TITLE_FONT_SIZE_KEY,
 } from './settings.js';
+import { MAX_SUBTASK_LEVELS, MIN_SUBTASK_LEVELS } from './taskTree.js';
 
 const SORT_OPTIONS = [
   { id: 'my-order', label: 'My order' },
@@ -303,19 +315,7 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     });
     settings.bind(SUBTASK_RADIO_SIZE_KEY, subtaskRadioSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
-    const subtaskLevelsRow = new Adw.SpinRow({
-      title: 'Task nesting levels',
-      subtitle: '2: task and subtask. 3: a subtask can have its own subtasks.',
-      adjustment: new Gtk.Adjustment({
-        lower: 2,
-        upper: 3,
-        step_increment: 1,
-        page_increment: 1,
-      }),
-      digits: 0,
-      numeric: true,
-    });
-    settings.bind(SUBTASK_LEVELS_KEY, subtaskLevelsRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+    const subtaskLevelsRow = this._buildSubtaskLevelsRow(window, settings);
 
     typographyGroup.add(titleFontSizeRow);
     typographyGroup.add(descriptionFontSizeRow);
@@ -406,5 +406,110 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     page.add(retentionGroup);
 
     window.add(page);
+  }
+
+  // Not bound to the key like the other rows: raising the limit is applied
+  // at once, but lowering it is only a request. The extension checks every
+  // task list and applies it only if no subtask is nested deeper than the
+  // new limit; otherwise the row goes back and a dialog lists the tasks to
+  // fix first. See nestingCheck.ts.
+  private _buildSubtaskLevelsRow(window: Adw.PreferencesWindow, settings: Gio.Settings): Adw.SpinRow {
+    const subtitle = '2: task and subtask. 3: a subtask can have its own subtasks.';
+    const row = new Adw.SpinRow({
+      title: 'Task nesting levels',
+      subtitle,
+      adjustment: new Gtk.Adjustment({
+        lower: MIN_SUBTASK_LEVELS,
+        upper: MAX_SUBTASK_LEVELS,
+        step_increment: 1,
+        page_increment: 1,
+      }),
+      digits: 0,
+      numeric: true,
+      value: settings.get_int(SUBTASK_LEVELS_KEY),
+    });
+
+    let syncing = false;
+    let pending: { id: string; timerId: number } | null = null;
+
+    const showRow = (value: number) => {
+      syncing = true;
+      row.value = value;
+      syncing = false;
+    };
+    const endPending = () => {
+      if (!pending)
+        return;
+      GLib.source_remove(pending.timerId);
+      pending = null;
+      row.sensitive = true;
+      row.subtitle = subtitle;
+    };
+    const showProblem = ({ heading, body }: LevelsMessage) => {
+      const dialog = new Adw.AlertDialog({ heading, body });
+      dialog.add_response('ok', 'OK');
+      dialog.present(window);
+    };
+
+    row.connect('notify::value', () => {
+      if (syncing || pending)
+        return;
+      const wanted = Math.round(row.value);
+      const current = settings.get_int(SUBTASK_LEVELS_KEY);
+      if (wanted === current)
+        return;
+      if (wanted > current) {
+        // Nothing can be nested too deep under a higher limit.
+        settings.set_int(SUBTASK_LEVELS_KEY, wanted);
+        return;
+      }
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      const timerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, LEVELS_CHECK_TIMEOUT_SECONDS, () => {
+        if (pending?.id === id) {
+          pending.timerId = 0;
+          pending = null;
+          row.sensitive = true;
+          row.subtitle = subtitle;
+          const limit = settings.get_int(SUBTASK_LEVELS_KEY);
+          showRow(limit);
+          showProblem(describeLevelsTimeout(limit));
+        }
+        return GLib.SOURCE_REMOVE;
+      });
+      pending = { id, timerId };
+      row.sensitive = false;
+      row.subtitle = 'Checking every task list for deeper subtasks…';
+      settings.set_string(SUBTASK_LEVELS_REQUEST_KEY, serializeLevelsRequest({ id, levels: wanted }));
+    });
+
+    const resultId = settings.connect(`changed::${SUBTASK_LEVELS_RESULT_KEY}`, () => {
+      const result = parseLevelsResult(settings.get_string(SUBTASK_LEVELS_RESULT_KEY));
+      if (!result || !pending || result.id !== pending.id)
+        return;
+      endPending();
+      const limit = settings.get_int(SUBTASK_LEVELS_KEY);
+      showRow(limit);
+      const problem = describeLevelsProblem(result, limit);
+      if (problem)
+        showProblem(problem);
+      else
+        window.add_toast(new Adw.Toast({ title: `Nesting levels set to ${limit}`, timeout: 3 }));
+    });
+    // Changed elsewhere (or applied by the extension): follow it, unless a
+    // check is in progress — its result decides what the row shows.
+    const levelsId = settings.connect(`changed::${SUBTASK_LEVELS_KEY}`, () => {
+      if (!pending)
+        showRow(settings.get_int(SUBTASK_LEVELS_KEY));
+    });
+    window.connect('close-request', () => {
+      settings.disconnect(resultId);
+      settings.disconnect(levelsId);
+      if (pending?.timerId)
+        GLib.source_remove(pending.timerId);
+      pending = null;
+      return false;
+    });
+
+    return row;
   }
 }

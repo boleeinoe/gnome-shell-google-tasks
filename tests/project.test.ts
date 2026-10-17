@@ -271,6 +271,30 @@ describe('settings schema', () => {
     expect(DEFAULT_SUBTASK_RADIO_SIZE_PX).toBeLessThan(DEFAULT_RADIO_SIZE_PX);
   });
 
+  it('the nesting-levels row is never bound straight to its key', () => {
+    // Lowering it must go through the extension's check of every list.
+    expect(prefsTs).not.toMatch(/settings\.bind\(SUBTASK_LEVELS_KEY/);
+    expect(prefsTs).toContain('lower: MIN_SUBTASK_LEVELS');
+    expect(prefsTs).toContain('upper: MAX_SUBTASK_LEVELS');
+    expect(prefsTs).toContain('SUBTASK_LEVELS_REQUEST_KEY');
+  });
+
+  it('the extension checks all lists, completed tasks included, before lowering the limit', () => {
+    const extensionTs = read('src/extension.ts');
+    const handler = extensionTs.match(/async _onSubtaskLevelsRequest\(\)[\s\S]*?\n {2}\}\n/)?.[0] ?? '';
+    expect(handler).toContain('getListsAndTasks(true)');
+    // A list that failed to load means the check is incomplete: refuse.
+    expect(handler).toMatch(/failedListIds\.length > 0[\s\S]*?status: 'failed'/);
+    // The limit is only written when the answer is "applied".
+    expect(handler).toMatch(/if \(result\.status === 'applied'\)\s*this\._settings\.set_int\(SUBTASK_LEVELS_KEY/);
+  });
+
+  it('the package always ships a freshly compiled schema', () => {
+    const makefile = read('Makefile');
+    expect(makefile).toMatch(/DIST_ASSETS = [^\n]*\$\(DIST_SCHEMA_COMPILED\)/);
+    expect(makefile).toMatch(/\$\(DIST_SCHEMA_COMPILED\): \$\(DIST_SCHEMA_XML\)\n\tglib-compile-schemas/);
+  });
+
   it('preferences spin rows use the schema ranges', () => {
     // Every Adw.SpinRow is followed by settings.bind(KEY, row, ...).
     const rows = [...prefsTs.matchAll(/const (\w+) = new Adw\.SpinRow\(\{[\s\S]*?lower: (-?\d+),[\s\S]*?upper: (-?\d+),[\s\S]*?\}\);\s*settings\.bind\((\w+_KEY), \1,/g)];
