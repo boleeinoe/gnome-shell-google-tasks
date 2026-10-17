@@ -1,3 +1,4 @@
+import type { Lang } from './i18n.js';
 import type { LevelsMessage } from './nestingCheck.js';
 import Adw from 'gi://Adw';
 import Gio from 'gi://Gio';
@@ -11,6 +12,7 @@ import {
   parseLevelsResult,
   serializeLevelsRequest,
 } from './nestingCheck.js';
+import { pt, resolveLang } from './prefsStrings.js';
 import {
   COLUMN_WIDTH_KEY,
   COMPLETED_RETENTION_MINUTES_KEY,
@@ -40,38 +42,90 @@ import {
 } from './settings.js';
 import { MAX_SUBTASK_LEVELS, MIN_SUBTASK_LEVELS } from './taskTree.js';
 
+// Option ids (stored in GSettings) and the keys of their labels in
+// prefsStrings.ts.
 const SORT_OPTIONS = [
-  { id: 'my-order', label: 'My order' },
-  { id: 'date', label: 'Date' },
-  { id: 'deadline', label: 'Deadline' },
-  { id: 'starred-recently', label: 'Starred recently' },
-  { id: 'title', label: 'Title' },
+  { id: 'my-order', label: 'sortMyOrder' },
+  { id: 'date', label: 'sortDate' },
+  { id: 'deadline', label: 'sortDeadline' },
+  { id: 'starred-recently', label: 'sortStarredRecently' },
+  { id: 'title', label: 'sortTitle' },
 ];
 
 const TIMEFRAME_OPTIONS = [
-  { id: 'all', label: 'All tasks' },
-  { id: 'today', label: 'Today' },
-  { id: 'this-week', label: 'This week' },
-  { id: 'this-month', label: 'This month' },
+  { id: 'all', label: 'timeframeAll' },
+  { id: 'today', label: 'timeframeToday' },
+  { id: 'this-week', label: 'timeframeWeek' },
+  { id: 'this-month', label: 'timeframeMonth' },
 ];
 
+// Each language is named in itself, so it can be found whatever the
+// current language is.
 const LANGUAGE_OPTIONS = [
   { id: 'en', label: 'English' },
   { id: 'ru', label: 'Русский' },
 ];
 
+interface BuiltPage {
+  page: Adw.PreferencesPage;
+  // Disconnects whatever the page connected to the settings by hand.
+  dispose: () => void;
+}
+
 export default class GoogleTasksPreferences extends ExtensionPreferences {
+  // The window speaks the extension's interface language. Changing the
+  // language rebuilds the page in place, so the switch is immediate.
   async fillPreferencesWindow(window: Adw.PreferencesWindow): Promise<void> {
     const settings = this.getSettings();
+    let current: BuiltPage | null = null;
+
+    const build = () => {
+      const next = this._buildPage(window, settings, resolveLang(settings.get_string(LANGUAGE_KEY)));
+      if (current) {
+        current.dispose();
+        window.remove(current.page);
+      }
+      window.add(next.page);
+      window.set_visible_page(next.page);
+      current = next;
+    };
+    build();
+
+    // Deferred: the change comes from the language row itself, which the
+    // rebuild destroys — not from inside its own signal handler.
+    let rebuildId = 0;
+    const languageId = settings.connect(`changed::${LANGUAGE_KEY}`, () => {
+      if (rebuildId)
+        return;
+      rebuildId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        rebuildId = 0;
+        build();
+        return GLib.SOURCE_REMOVE;
+      });
+    });
+
+    window.connect('close-request', () => {
+      settings.disconnect(languageId);
+      if (rebuildId)
+        GLib.source_remove(rebuildId);
+      rebuildId = 0;
+      current?.dispose();
+      current = null;
+      return false;
+    });
+  }
+
+  private _buildPage(window: Adw.PreferencesWindow, settings: Gio.Settings, lang: Lang): BuiltPage {
+    const s = (key: string, params?: Record<string, string | number>) => pt(lang, key, params);
 
     const page = new Adw.PreferencesPage();
     const group = new Adw.PreferencesGroup({
-      title: 'General',
+      title: s('groupGeneral'),
     });
 
     const refreshIntervalRow = new Adw.SpinRow({
-      title: 'Refresh interval',
-      subtitle: 'How often to sync tasks (seconds). Each sync costs one request per task list plus one, against a Google Tasks quota of 50,000 requests per day — at 5 seconds and three lists that is already over the limit.',
+      title: s('refreshInterval'),
+      subtitle: s('refreshIntervalHint'),
       adjustment: new Gtk.Adjustment({
         lower: 5,
         upper: 3600,
@@ -81,18 +135,14 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
       digits: 0,
       numeric: true,
     });
-
     settings.bind(REFRESH_INTERVAL_KEY, refreshIntervalRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const sortRow = new Adw.ComboRow({
-      title: 'Sort by',
-      model: Gtk.StringList.new(SORT_OPTIONS.map(option => option.label)),
+      title: s('sortBy'),
+      model: Gtk.StringList.new(SORT_OPTIONS.map(option => s(option.label))),
     });
-
     const currentSortOrder = settings.get_string(TASK_SORT_ORDER_KEY);
-    const currentSortOrderIndex = Math.max(0, SORT_OPTIONS.findIndex(option => option.id === currentSortOrder));
-    sortRow.selected = currentSortOrderIndex;
-
+    sortRow.selected = Math.max(0, SORT_OPTIONS.findIndex(option => option.id === currentSortOrder));
     sortRow.connect('notify::selected', () => {
       const selectedOption = SORT_OPTIONS[sortRow.selected];
       if (selectedOption)
@@ -100,29 +150,24 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     });
 
     const showCompletedRow = new Adw.SwitchRow({
-      title: 'Show completed tasks',
-      subtitle: 'Display a collapsible section for completed tasks in the panel.',
+      title: s('showCompleted'),
+      subtitle: s('showCompletedHint'),
     });
-
     settings.bind(SHOW_COMPLETED_TASKS_KEY, showCompletedRow, 'active', Gio.SettingsBindFlags.DEFAULT);
 
     const showTaskDateRow = new Adw.SwitchRow({
-      title: 'Show task date',
-      subtitle: 'Show when each task was created next to its title, or when it was completed in the completed section.',
+      title: s('showTaskDate'),
+      subtitle: s('showTaskDateHint'),
     });
-
     settings.bind(SHOW_TASK_DATE_KEY, showTaskDateRow, 'active', Gio.SettingsBindFlags.DEFAULT);
 
     const timeframeRow = new Adw.ComboRow({
-      title: 'Timeframe',
-      subtitle: 'Show tasks due within the selected range.',
-      model: Gtk.StringList.new(TIMEFRAME_OPTIONS.map(option => option.label)),
+      title: s('timeframe'),
+      subtitle: s('timeframeHint'),
+      model: Gtk.StringList.new(TIMEFRAME_OPTIONS.map(option => s(option.label))),
     });
-
     const currentTimeframe = settings.get_string(TASK_TIMEFRAME_KEY);
-    const currentTimeframeIndex = Math.max(0, TIMEFRAME_OPTIONS.findIndex(option => option.id === currentTimeframe));
-    timeframeRow.selected = currentTimeframeIndex;
-
+    timeframeRow.selected = Math.max(0, TIMEFRAME_OPTIONS.findIndex(option => option.id === currentTimeframe));
     timeframeRow.connect('notify::selected', () => {
       const selectedOption = TIMEFRAME_OPTIONS[timeframeRow.selected];
       if (selectedOption)
@@ -130,18 +175,14 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     });
 
     const languageRow = new Adw.ComboRow({
-      title: 'Language',
-      subtitle: 'Language used for the extension\'s own interface text (labels, buttons, placeholder messages). Does not translate your task content.',
+      title: s('language'),
+      subtitle: s('languageHint'),
       model: Gtk.StringList.new(LANGUAGE_OPTIONS.map(option => option.label)),
     });
-
-    const currentLanguage = settings.get_string(LANGUAGE_KEY);
-    const currentLanguageIndex = Math.max(0, LANGUAGE_OPTIONS.findIndex(option => option.id === currentLanguage));
-    languageRow.selected = currentLanguageIndex;
-
+    languageRow.selected = Math.max(0, LANGUAGE_OPTIONS.findIndex(option => option.id === lang));
     languageRow.connect('notify::selected', () => {
       const selectedOption = LANGUAGE_OPTIONS[languageRow.selected];
-      if (selectedOption)
+      if (selectedOption && selectedOption.id !== settings.get_string(LANGUAGE_KEY))
         settings.set_string(LANGUAGE_KEY, selectedOption.id);
     });
 
@@ -154,12 +195,12 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     page.add(group);
 
     const appearanceGroup = new Adw.PreferencesGroup({
-      title: 'Appearance',
+      title: s('groupAppearance'),
     });
 
     const columnWidthRow = new Adw.SpinRow({
-      title: 'Column width',
-      subtitle: 'Width in pixels of the Google Tasks column in the calendar popup.',
+      title: s('columnWidth'),
+      subtitle: s('columnWidthHint'),
       adjustment: new Gtk.Adjustment({
         lower: 300,
         upper: 800,
@@ -172,8 +213,8 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(COLUMN_WIDTH_KEY, columnWidthRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const cornerRadiusRow = new Adw.SpinRow({
-      title: 'Corner radius',
-      subtitle: 'Rounding in pixels for colored task rows and their edit form.',
+      title: s('cornerRadius'),
+      subtitle: s('cornerRadiusHint'),
       adjustment: new Gtk.Adjustment({
         lower: 0,
         upper: 24,
@@ -186,14 +227,14 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(CORNER_RADIUS_KEY, cornerRadiusRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const taskBlocksRow = new Adw.SwitchRow({
-      title: 'Task blocks',
-      subtitle: 'Draw "my tasks" and "completed" as separate shaded blocks.',
+      title: s('taskBlocks'),
+      subtitle: s('taskBlocksHint'),
     });
     settings.bind(TASK_BLOCKS_ENABLED_KEY, taskBlocksRow, 'active', Gio.SettingsBindFlags.DEFAULT);
 
     const taskBlocksOpacityRow = new Adw.SpinRow({
-      title: 'Task block opacity',
-      subtitle: 'Percent of the notification bubble\'s opacity: 100 looks exactly like a GNOME notification, lower is more transparent, higher more solid.',
+      title: s('taskBlocksOpacity'),
+      subtitle: s('taskBlocksOpacityHint'),
       adjustment: new Gtk.Adjustment({
         lower: 0,
         upper: 300,
@@ -207,8 +248,8 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(TASK_BLOCKS_ENABLED_KEY, taskBlocksOpacityRow, 'sensitive', Gio.SettingsBindFlags.GET);
 
     const taskBlocksEdgeBlurRow = new Adw.SpinRow({
-      title: 'Task block edge blur',
-      subtitle: 'How soft the edge of the blocks and the list picker is, in pixels. 0 draws a crisp 1px outline.',
+      title: s('taskBlocksEdgeBlur'),
+      subtitle: s('taskBlocksEdgeBlurHint'),
       adjustment: new Gtk.Adjustment({
         lower: 0,
         upper: 24,
@@ -228,12 +269,12 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     page.add(appearanceGroup);
 
     const typographyGroup = new Adw.PreferencesGroup({
-      title: 'Typography',
+      title: s('groupTypography'),
     });
 
     const titleFontSizeRow = new Adw.SpinRow({
-      title: 'Title font size',
-      subtitle: 'Font size in pixels for task and subtask titles.',
+      title: s('titleFontSize'),
+      subtitle: s('titleFontSizeHint'),
       adjustment: new Gtk.Adjustment({
         lower: 8,
         upper: 24,
@@ -246,8 +287,8 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(TITLE_FONT_SIZE_KEY, titleFontSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const descriptionFontSizeRow = new Adw.SpinRow({
-      title: 'Description font size',
-      subtitle: 'Font size in pixels for task and subtask descriptions.',
+      title: s('descriptionFontSize'),
+      subtitle: s('descriptionFontSizeHint'),
       adjustment: new Gtk.Adjustment({
         lower: 8,
         upper: 20,
@@ -260,8 +301,8 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(DESCRIPTION_FONT_SIZE_KEY, descriptionFontSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const taskBlockSizeRow = new Adw.SpinRow({
-      title: 'Task block size',
-      subtitle: 'Vertical padding in pixels for top-level task rows.',
+      title: s('taskBlockSize'),
+      subtitle: s('taskBlockSizeHint'),
       adjustment: new Gtk.Adjustment({
         lower: 0,
         upper: 16,
@@ -274,8 +315,8 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(TASK_BLOCK_SIZE_KEY, taskBlockSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const subtaskBlockSizeRow = new Adw.SpinRow({
-      title: 'Subtask block size',
-      subtitle: 'Vertical padding in pixels for subtask rows.',
+      title: s('subtaskBlockSize'),
+      subtitle: s('subtaskBlockSizeHint'),
       adjustment: new Gtk.Adjustment({
         lower: 0,
         upper: 16,
@@ -288,8 +329,8 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(SUBTASK_BLOCK_SIZE_KEY, subtaskBlockSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const radioSizeRow = new Adw.SpinRow({
-      title: 'Checkmark circle size',
-      subtitle: 'Width and height in pixels of the completion circle for tasks.',
+      title: s('radioSize'),
+      subtitle: s('radioSizeHint'),
       adjustment: new Gtk.Adjustment({
         lower: 8,
         upper: 24,
@@ -302,8 +343,8 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(RADIO_SIZE_KEY, radioSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const subtaskRadioSizeRow = new Adw.SpinRow({
-      title: 'Subtask checkmark circle size',
-      subtitle: 'Width and height in pixels of the completion circle for subtasks.',
+      title: s('subtaskRadioSize'),
+      subtitle: s('subtaskRadioSizeHint'),
       adjustment: new Gtk.Adjustment({
         lower: 6,
         upper: 24,
@@ -315,7 +356,7 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     });
     settings.bind(SUBTASK_RADIO_SIZE_KEY, subtaskRadioSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
-    const subtaskLevelsRow = this._buildSubtaskLevelsRow(window, settings);
+    const subtaskLevels = this._buildSubtaskLevelsRow(window, settings, lang);
 
     typographyGroup.add(titleFontSizeRow);
     typographyGroup.add(descriptionFontSizeRow);
@@ -323,22 +364,22 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     typographyGroup.add(subtaskBlockSizeRow);
     typographyGroup.add(radioSizeRow);
     typographyGroup.add(subtaskRadioSizeRow);
-    typographyGroup.add(subtaskLevelsRow);
+    typographyGroup.add(subtaskLevels.row);
     page.add(typographyGroup);
 
     const emptyStateGroup = new Adw.PreferencesGroup({
-      title: 'Empty state',
-      description: 'Shown when the selected list has no tasks.',
+      title: s('groupEmptyState'),
+      description: s('groupEmptyStateHint'),
     });
 
     const emptyStateIconRow = new Adw.EntryRow({
-      title: 'Icon name',
+      title: s('emptyStateIcon'),
     });
     settings.bind(EMPTY_STATE_ICON_KEY, emptyStateIconRow, 'text', Gio.SettingsBindFlags.DEFAULT);
 
     const emptyStateIconSizeRow = new Adw.SpinRow({
-      title: 'Icon size',
-      subtitle: 'Size in pixels of the icon.',
+      title: s('emptyStateIconSize'),
+      subtitle: s('emptyStateIconSizeHint'),
       adjustment: new Gtk.Adjustment({
         lower: 24,
         upper: 128,
@@ -351,8 +392,8 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(EMPTY_STATE_ICON_SIZE_KEY, emptyStateIconSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const emptyStateFontSizeRow = new Adw.SpinRow({
-      title: 'Text size',
-      subtitle: 'Font size in pixels of the message.',
+      title: s('emptyStateFontSize'),
+      subtitle: s('emptyStateFontSizeHint'),
       adjustment: new Gtk.Adjustment({
         lower: 8,
         upper: 24,
@@ -365,8 +406,8 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     settings.bind(EMPTY_STATE_FONT_SIZE_KEY, emptyStateFontSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
     const emptyStateOpacityRow = new Adw.SpinRow({
-      title: 'Opacity',
-      subtitle: 'Opacity percentage for both the icon and the text.',
+      title: s('emptyStateOpacity'),
+      subtitle: s('emptyStateOpacityHint'),
       adjustment: new Gtk.Adjustment({
         lower: 10,
         upper: 100,
@@ -385,12 +426,12 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     page.add(emptyStateGroup);
 
     const retentionGroup = new Adw.PreferencesGroup({
-      title: 'Completed tasks',
+      title: s('groupCompleted'),
     });
 
     const retentionRow = new Adw.SpinRow({
-      title: 'Auto-delete after (minutes)',
-      subtitle: 'Delete a task this many minutes after it\'s marked completed. 0 disables auto-deletion.',
+      title: s('retention'),
+      subtitle: s('retentionHint'),
       adjustment: new Gtk.Adjustment({
         lower: 0,
         upper: 43200,
@@ -405,7 +446,7 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     retentionGroup.add(retentionRow);
     page.add(retentionGroup);
 
-    window.add(page);
+    return { page, dispose: subtaskLevels.dispose };
   }
 
   // Not bound to the key like the other rows: raising the limit is applied
@@ -413,10 +454,10 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
   // task list and applies it only if no subtask is nested deeper than the
   // new limit; otherwise the row goes back and a dialog lists the tasks to
   // fix first. See nestingCheck.ts.
-  private _buildSubtaskLevelsRow(window: Adw.PreferencesWindow, settings: Gio.Settings): Adw.SpinRow {
-    const subtitle = '2: task and subtask. 3: a subtask can have its own subtasks.';
+  private _buildSubtaskLevelsRow(window: Adw.PreferencesWindow, settings: Gio.Settings, lang: Lang): { row: Adw.SpinRow; dispose: () => void } {
+    const subtitle = pt(lang, 'subtaskLevelsHint');
     const row = new Adw.SpinRow({
-      title: 'Task nesting levels',
+      title: pt(lang, 'subtaskLevels'),
       subtitle,
       adjustment: new Gtk.Adjustment({
         lower: MIN_SUBTASK_LEVELS,
@@ -440,14 +481,15 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     const endPending = () => {
       if (!pending)
         return;
-      GLib.source_remove(pending.timerId);
+      if (pending.timerId)
+        GLib.source_remove(pending.timerId);
       pending = null;
       row.sensitive = true;
       row.subtitle = subtitle;
     };
     const showProblem = ({ heading, body }: LevelsMessage) => {
       const dialog = new Adw.AlertDialog({ heading, body });
-      dialog.add_response('ok', 'OK');
+      dialog.add_response('ok', pt(lang, 'ok'));
       dialog.present(window);
     };
 
@@ -467,18 +509,16 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
       const timerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, LEVELS_CHECK_TIMEOUT_SECONDS, () => {
         if (pending?.id === id) {
           pending.timerId = 0;
-          pending = null;
-          row.sensitive = true;
-          row.subtitle = subtitle;
+          endPending();
           const limit = settings.get_int(SUBTASK_LEVELS_KEY);
           showRow(limit);
-          showProblem(describeLevelsTimeout(limit));
+          showProblem(describeLevelsTimeout(limit, lang));
         }
         return GLib.SOURCE_REMOVE;
       });
       pending = { id, timerId };
       row.sensitive = false;
-      row.subtitle = 'Checking every task list for deeper subtasks…';
+      row.subtitle = pt(lang, 'subtaskLevelsChecking');
       settings.set_string(SUBTASK_LEVELS_REQUEST_KEY, serializeLevelsRequest({ id, levels: wanted }));
     });
 
@@ -489,11 +529,11 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
       endPending();
       const limit = settings.get_int(SUBTASK_LEVELS_KEY);
       showRow(limit);
-      const problem = describeLevelsProblem(result, limit);
+      const problem = describeLevelsProblem(result, limit, lang);
       if (problem)
         showProblem(problem);
       else
-        window.add_toast(new Adw.Toast({ title: `Nesting levels set to ${limit}`, timeout: 3 }));
+        window.add_toast(new Adw.Toast({ title: pt(lang, 'subtaskLevelsApplied', { n: limit }), timeout: 3 }));
     });
     // Changed elsewhere (or applied by the extension): follow it, unless a
     // check is in progress — its result decides what the row shows.
@@ -501,15 +541,18 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
       if (!pending)
         showRow(settings.get_int(SUBTASK_LEVELS_KEY));
     });
-    window.connect('close-request', () => {
+
+    let disposed = false;
+    const dispose = () => {
+      if (disposed)
+        return;
+      disposed = true;
       settings.disconnect(resultId);
       settings.disconnect(levelsId);
       if (pending?.timerId)
         GLib.source_remove(pending.timerId);
       pending = null;
-      return false;
-    });
-
-    return row;
+    };
+    return { row, dispose };
   }
 }

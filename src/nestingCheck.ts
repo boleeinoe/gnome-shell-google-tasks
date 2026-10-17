@@ -7,7 +7,9 @@
 // through GSettings: the preferences write a request, the extension checks
 // every list and writes back a result. This module holds the pure parts —
 // the depth check and both messages — so the tests can run them.
+import type { Lang } from './i18n.js';
 import type { GoogleTask, GoogleTaskList } from './tasksManager.js';
+import { levelWord, pt } from './prefsStrings.js';
 
 // How many offending tasks a rejection lists; the rest are only counted.
 export const MAX_REPORTED_OFFENDERS = 8;
@@ -16,6 +18,8 @@ export const MAX_REPORTED_OFFENDERS = 8;
 export const LEVELS_CHECK_TIMEOUT_SECONDS = 30;
 
 export interface NestingOffender {
+  // Empty for an untitled list or task; shown as "(untitled)" in the
+  // preferences' language.
   listTitle: string;
   // Titles from the top-level task down to the offending task.
   path: string[];
@@ -32,8 +36,6 @@ export type LevelsResult
   = | { id: string; status: 'applied'; levels: number }
     | { id: string; status: 'rejected'; levels: number; deepest: number; total: number; offenders: NestingOffender[] }
     | { id: string; status: 'failed'; levels: number; failedLists: string[]; detail?: string };
-
-const UNTITLED = '(untitled)';
 
 // Level of every task, per list: 1 + its parent's level, where a task whose
 // parent isn't in the same list counts as top-level — the same rule the
@@ -71,7 +73,7 @@ export function taskLevels(tasks: GoogleTask[]): Map<string, number> {
 
 // Every task nested deeper than `maxLevels`, deepest first, across all lists.
 export function findNestingOffenders(lists: GoogleTaskList[], tasks: GoogleTask[], maxLevels: number): NestingOffender[] {
-  const listTitles = new Map(lists.map(list => [list.id, list.title || UNTITLED]));
+  const listTitles = new Map(lists.map(list => [list.id, list.title?.trim() ?? '']));
   const byKey = new Map(tasks.map(task => [`${task.taskListId ?? ''}\u0000${task.id}`, task]));
   const levels = taskLevels(tasks);
 
@@ -83,10 +85,10 @@ export function findNestingOffenders(lists: GoogleTaskList[], tasks: GoogleTask[
     const path: string[] = [];
     let current: GoogleTask | undefined = task;
     while (current && path.length < level) {
-      path.unshift(current.title?.trim() || UNTITLED);
+      path.unshift(current.title?.trim() ?? '');
       current = current.parent ? byKey.get(`${current.taskListId ?? ''}\u0000${current.parent}`) : undefined;
     }
-    offenders.push({ listTitle: listTitles.get(task.taskListId ?? '') ?? UNTITLED, path, level });
+    offenders.push({ listTitle: listTitles.get(task.taskListId ?? '') ?? '', path, level });
   }
   return offenders.sort((a, b) => b.level - a.level || a.listTitle.localeCompare(b.listTitle) || a.path.join('\u0000').localeCompare(b.path.join('\u0000')));
 }
@@ -158,35 +160,36 @@ export interface LevelsMessage {
   body: string;
 }
 
-// What the preferences window shows when a change isn't applied. `current`
-// is the limit that stays in effect.
-export function describeLevelsProblem(result: LevelsResult, current: number): LevelsMessage | null {
+// What the preferences window shows when a change isn't applied, in the
+// preferences' language. `current` is the limit that stays in effect.
+export function describeLevelsProblem(result: LevelsResult, current: number, lang: Lang = 'en'): LevelsMessage | null {
+  const name = (title: string) => title || pt(lang, 'untitled');
   if (result.status === 'rejected') {
-    const lines = result.offenders.map(o => `• ${o.listTitle}: ${o.path.join(' › ')}`);
+    const lines = result.offenders.map(o => `• ${name(o.listTitle)}: ${o.path.map(name).join(' › ')}`);
     const more = result.total - result.offenders.length;
     if (more > 0)
-      lines.push(`…and ${more} more`);
-    return {
-      heading: 'Subtasks are nested too deep',
-      body: `Some tasks are nested ${result.deepest} levels deep, so the limit can't be lowered to ${result.levels}. `
-        + `Move these subtasks up a level or delete them first, then try again. The limit stays at ${current}.\n\n${lines.join('\n')}`,
-    };
+      lines.push(pt(lang, 'tooDeepMore', { n: more }));
+    const body = pt(lang, 'tooDeepBody', {
+      deepest: result.deepest,
+      levelWord: levelWord(lang, result.deepest),
+      levels: result.levels,
+      current,
+    });
+    return { heading: pt(lang, 'tooDeepHeading'), body: `${body}\n\n${lines.join('\n')}` };
   }
   if (result.status === 'failed') {
-    const reason = result.failedLists.length > 0
-      ? `These task lists didn't load: ${result.failedLists.join(', ')}.`
-      : `Google Tasks couldn't be reached${result.detail ? ` (${result.detail})` : ''}.`;
-    return {
-      heading: 'Couldn\'t check every task list',
-      body: `${reason} Every list has to be checked before the limit can be lowered, so it stays at ${current}. Try again in a moment.`,
-    };
+    let reason: string;
+    if (result.failedLists.length > 0)
+      reason = pt(lang, 'checkFailedLists', { lists: result.failedLists.map(name).join(', ') });
+    else if (result.detail)
+      reason = pt(lang, 'checkFailedUnreachableDetail', { detail: result.detail });
+    else
+      reason = pt(lang, 'checkFailedUnreachable');
+    return { heading: pt(lang, 'checkFailedHeading'), body: pt(lang, 'checkFailedBody', { reason, current }) };
   }
   return null;
 }
 
-export function describeLevelsTimeout(current: number): LevelsMessage {
-  return {
-    heading: 'No answer from the extension',
-    body: `Task lists are checked by the extension itself. Make sure it's enabled and online, then try again. The limit stays at ${current}.`,
-  };
+export function describeLevelsTimeout(current: number, lang: Lang = 'en'): LevelsMessage {
+  return { heading: pt(lang, 'timeoutHeading'), body: pt(lang, 'timeoutBody', { current }) };
 }
