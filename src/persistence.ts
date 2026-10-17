@@ -2,6 +2,8 @@
 // times). No GNOME imports, so it runs under `bun test`; file I/O lives in
 // extension.ts.
 
+import { formatColorSpec, parseColorSpec } from './colorSpec.js';
+
 function parseObject(text: string): Record<string, unknown> {
   const parsed: unknown = JSON.parse(text);
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
@@ -9,14 +11,17 @@ function parseObject(text: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-// task id -> color id. Entries with an unknown color or a non-string value
-// are dropped rather than trusted: the file is ours, but it can be edited or
-// truncated, and a bad value would otherwise reach the renderer.
+// task id -> color spec (see colorSpec.ts: a palette id or '#rrggbb', with
+// an optional '@opacity'). Entries with an unknown color, a bad opacity or a
+// non-string value are dropped rather than trusted: the file is ours, but it
+// can be edited or truncated, and a bad value would otherwise reach the
+// renderer. Valid entries come back normalized.
 export function parseTaskColors(text: string, validColorIds: ReadonlySet<string>): Map<string, string> {
   const result = new Map<string, string>();
   for (const [id, value] of Object.entries(parseObject(text))) {
-    if (id && typeof value === 'string' && validColorIds.has(value) && value !== 'none')
-      result.set(id, value);
+    const spec = id && typeof value === 'string' ? parseColorSpec(value, validColorIds) : null;
+    if (spec)
+      result.set(id, formatColorSpec(spec));
   }
   return result;
 }

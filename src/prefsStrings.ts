@@ -39,6 +39,8 @@ export const PREFS_STRINGS: Record<Lang, Record<string, string>> = {
     taskBlocksOpacityHint: 'Percent of the notification bubble\'s opacity: 100 looks exactly like a GNOME notification, lower is more transparent, higher more solid.',
     taskBlocksEdgeBlur: 'Task block edge blur',
     taskBlocksEdgeBlurHint: 'How soft the edge of the blocks and the list picker is, in pixels. 0 draws a crisp 1px outline.',
+    listMenuVisibleLists: 'Visible task lists',
+    listMenuVisibleListsHint: 'How many task lists the list picker shows before it starts scrolling.',
 
     groupTypography: 'Typography',
     titleFontSize: 'Title font size',
@@ -60,7 +62,6 @@ export const PREFS_STRINGS: Record<Lang, Record<string, string>> = {
 
     groupEmptyState: 'Empty state',
     groupEmptyStateHint: 'Shown when the selected list has no tasks.',
-    emptyStateIcon: 'Icon name',
     emptyStateIconSize: 'Icon size',
     emptyStateIconSizeHint: 'Size in pixels of the icon.',
     emptyStateFontSize: 'Text size',
@@ -119,6 +120,8 @@ export const PREFS_STRINGS: Record<Lang, Record<string, string>> = {
     taskBlocksOpacityHint: 'В процентах от непрозрачности уведомления: 100 — точно как уведомление GNOME, меньше — прозрачнее, больше — плотнее.',
     taskBlocksEdgeBlur: 'Размытие края блоков',
     taskBlocksEdgeBlurHint: 'Насколько мягкий край у блоков и у меню списков, в пикселях. 0 — чёткая линия толщиной 1 пиксель.',
+    listMenuVisibleLists: 'Видимых списков задач',
+    listMenuVisibleListsHint: 'Сколько списков задач помещается в меню выбора списка, прежде чем появится прокрутка.',
 
     groupTypography: 'Текст и размеры',
     titleFontSize: 'Размер шрифта названия',
@@ -140,7 +143,6 @@ export const PREFS_STRINGS: Record<Lang, Record<string, string>> = {
 
     groupEmptyState: 'Пустой список',
     groupEmptyStateHint: 'Показывается, когда в выбранном списке нет задач.',
-    emptyStateIcon: 'Имя значка',
     emptyStateIconSize: 'Размер значка',
     emptyStateIconSizeHint: 'Размер значка в пикселях.',
     emptyStateFontSize: 'Размер текста',

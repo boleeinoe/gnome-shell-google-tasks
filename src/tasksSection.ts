@@ -1,18 +1,26 @@
 // The task panel itself: the list picker, the "my tasks" and "completed"
 // blocks, task rows with their inline forms and color pickers. Knows
 // nothing about Google or settings storage; GoogleTasksExtension feeds it.
+import type { ColorSpec } from './colorSpec.js';
 import type { Lang } from './i18n.js';
 import type { GoogleTask, GoogleTaskList } from './tasksManager.js';
-import type { Rgb } from './taskStyle.js';
+import type { Rgb, Rgba } from './taskStyle.js';
 import type { ContextMenuItem } from './textInteraction.js';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
-import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import { ensureActorVisibleInScrollView } from 'resource:///org/gnome/shell/misc/animationUtils.js';
+import { ColorPicker } from './colorPicker.js';
+import {
+  colorSpecHex,
+  colorSpecOpacity,
+  DEFAULT_TASK_OPACITY_PERCENT,
+  formatColorSpec,
+  parseColorSpec,
+} from './colorSpec.js';
+import { DROPDOWN_CLOSE_MS, DropdownPanel } from './dropdownPanel.js';
 import {
   t,
   textStrings,
@@ -20,9 +28,9 @@ import {
 import {
   DEFAULT_DESCRIPTION_FONT_SIZE_PX,
   DEFAULT_EMPTY_STATE_FONT_SIZE_PX,
-  DEFAULT_EMPTY_STATE_ICON,
   DEFAULT_EMPTY_STATE_ICON_SIZE_PX,
   DEFAULT_EMPTY_STATE_OPACITY_PERCENT,
+  DEFAULT_LIST_MENU_VISIBLE_LISTS,
   DEFAULT_SUBTASK_BLOCK_SIZE_PX,
   DEFAULT_TASK_BLOCK_SIZE_PX,
   DEFAULT_TASK_BLOCKS_EDGE_BLUR_PX,
@@ -35,11 +43,14 @@ import {
   BLOCK_HEADING_ICON_SIZE_PX,
   blockHeadingFontSizePx,
   buildBlockStyle,
-  buildMenuStyles,
+  buildMenuStyle,
   buildTaskFormStyle,
   buildTaskRowStyle,
   DEFAULT_RADIO_SIZE_PX,
   DEFAULT_SUBTASK_RADIO_SIZE_PX,
+  LIST_DROPDOWN_BLUR_RADIUS_PX,
+  LIST_DROPDOWN_ITEMS_ALPHA,
+  percentToAlpha,
   pickTaskColorBase,
   subtaskIndentPx,
   TASK_COLOR_BASE_DARK,
@@ -59,16 +70,17 @@ import {
   setupRichLabel,
 } from './textInteraction.js';
 
+// The empty-state icon is part of the extension's look, not a setting.
+const EMPTY_STATE_ICON = 'view-list-symbolic';
+
 // Task blocks: extra alpha for their outline lives in taskStyle.ts; the
 // corner radius is read from the theme's notification bubble, capped.
 // Used when the notification color can't be read (popup not on stage yet):
 // roughly what the default theme gives `.message`.
 const BLOCK_FALLBACK_COLOR = { r: 255, g: 255, b: 255, a: 0.08 };
-// Background blur behind the task-list picker, so it can carry the same
-// translucent notification tint without the task rows showing through.
-const DROPDOWN_BLUR_RADIUS_PX = 40;
 const BLOCK_FALLBACK_RADIUS_PX = 12;
 const BLOCK_MAX_RADIUS_PX = 16;
+const LIST_BLUR_EFFECT_NAME = 'google-tasks-list-blur';
 
 export const TASK_COLOR_PALETTE: { id: string; label: string }[] = [
   { id: 'none', label: 'No color' },
@@ -79,6 +91,8 @@ export const TASK_COLOR_PALETTE: { id: string; label: string }[] = [
   { id: 'blue', label: 'Blue' },
   { id: 'purple', label: 'Purple' },
 ];
+
+const TASK_COLOR_IDS: ReadonlySet<string> = new Set(Object.keys(TASK_COLOR_HEX));
 
 // Full and unambiguous, in local time.
 function formatTimestamp(epochMs: number): string {
@@ -113,10 +127,10 @@ export const TasksSection = GObject.registerClass({
   },
 }, class TasksSection extends St.BoxLayout {
   private _taskListDropdownButton!: St.Button;
+  private _taskListDropdownIcon!: St.Icon;
   private _taskListDropdownLabel!: St.Label;
-  private _taskListDropdownMenu!: PopupMenu.PopupMenu;
-  private _taskListDropdownMenuManager!: PopupMenu.PopupMenuManager;
-  private _colorMenuManager!: PopupMenu.PopupMenuManager;
+  // The task-list picker: a dropdown as wide as the header button.
+  private _listDropdown!: DropdownPanel;
   private _activeTasksList!: St.BoxLayout;
   private _completedHeaderButton!: St.Button;
   private _completedLabel!: St.Label;
@@ -134,9 +148,6 @@ export const TasksSection = GObject.registerClass({
   private _blocksEnabled!: boolean;
   private _blocksOpacityPercent!: number;
   private _blocksEdgeBlurPx!: number;
-  // Whether the background blur behind the task-list picker could be set
-  // up; without it the picker gets an opaque fill instead.
-  private _dropdownBlurred = false;
   // Hidden widget carrying GNOME Shell's own `.message` class — the
   // notification bubble. Its theme node is read back so the blocks follow
   // whatever color the active shell theme gives notifications.
@@ -161,6 +172,9 @@ export const TasksSection = GObject.registerClass({
   private _showTaskDate!: boolean;
   private _openMenuCount!: number;
   private _onMenusClosed!: (() => void) | null;
+  // Delays the render a closed picker asks for until its close animation
+  // has played (the render rebuilds the row it hangs from).
+  private _menusClosedTimerId!: number;
   private _cornerRadiusPx!: number;
   private _titleFontSizePx!: number;
   private _descriptionFontSizePx!: number;
@@ -169,13 +183,21 @@ export const TasksSection = GObject.registerClass({
   private _radioSizePx!: number;
   private _subtaskRadioSizePx!: number;
   private _subtaskLevels!: number;
-  // Inline styles for popup menus (task-list picker, color pickers), built
-  // in _updateBlockStyle(): one for a menu with a background blur, one
-  // flattened onto a solid base for when the blur isn't available.
-  private _menuStyleBlurred: string | null = null;
-  private _taskListsSignature: string | null = null;
-  private _menuStyleSolid: string | null = null;
-  private _emptyStateIcon!: string;
+  // Opaque inline style for the dropdowns (task-list picker, color
+  // pickers), built in _updateBlockStyle() from the notification color.
+  private _menuStyle!: string | null;
+  // The notification color the blocks are painted with, kept for the list
+  // picker, which is styled on open (see _updateListItemsStyle()).
+  private _blockColor!: Rgba;
+  // Every dropdown that currently exists, so a theme change restyles them.
+  private _dropdownPanels!: Set<DropdownPanel>;
+  private _taskListsSignature!: string | null;
+  // The lists sit in a scroll view, capped at _listMenuVisibleLists items
+  // (see _updateListMenuHeight()).
+  private _taskListBox!: St.BoxLayout;
+  private _taskListScrollView!: St.ScrollView;
+  private _selectedListItem!: St.Button | null;
+  private _listMenuVisibleLists!: number;
   private _emptyStateIconSizePx!: number;
   private _emptyStateFontSizePx!: number;
   private _emptyStateOpacityPercent!: number;
@@ -211,14 +233,6 @@ export const TasksSection = GObject.registerClass({
   // in-progress edit from the outside without hunting through row actors.
   private _activeFormCloser!: (() => void) | null;
 
-  // Explicit, so TypeScript doesn't synthesise `super(...arguments)` for the
-  // field initializers above (eslint's prefer-rest-params flags it in dist/).
-  // The tuple keeps the call identical: no argument is passed on when none
-  // was given, and GObject's constructor still runs _init() as before.
-  constructor(...args: [properties?: Partial<St.BoxLayout.ConstructorProps>]) {
-    super(...args);
-  }
-
   _init() {
     super._init({
       style_class: 'google-tasks-section',
@@ -248,7 +262,6 @@ export const TasksSection = GObject.registerClass({
     this._radioSizePx = DEFAULT_RADIO_SIZE_PX;
     this._subtaskRadioSizePx = DEFAULT_SUBTASK_RADIO_SIZE_PX;
     this._subtaskLevels = DEFAULT_SUBTASK_LEVELS;
-    this._emptyStateIcon = DEFAULT_EMPTY_STATE_ICON;
     this._emptyStateIconSizePx = DEFAULT_EMPTY_STATE_ICON_SIZE_PX;
     this._emptyStateFontSizePx = DEFAULT_EMPTY_STATE_FONT_SIZE_PX;
     this._emptyStateOpacityPercent = DEFAULT_EMPTY_STATE_OPACITY_PERCENT;
@@ -259,6 +272,13 @@ export const TasksSection = GObject.registerClass({
     this._blocksEnabled = DEFAULT_TASK_BLOCKS_ENABLED;
     this._blocksOpacityPercent = DEFAULT_TASK_BLOCKS_OPACITY_PERCENT;
     this._blocksEdgeBlurPx = DEFAULT_TASK_BLOCKS_EDGE_BLUR_PX;
+    this._menusClosedTimerId = 0;
+    this._menuStyle = null;
+    this._blockColor = BLOCK_FALLBACK_COLOR;
+    this._dropdownPanels = new Set();
+    this._taskListsSignature = null;
+    this._selectedListItem = null;
+    this._listMenuVisibleLists = DEFAULT_LIST_MENU_VISIBLE_LISTS;
 
     const box = new St.BoxLayout({
       style_class: 'google-tasks-box',
@@ -292,6 +312,7 @@ export const TasksSection = GObject.registerClass({
     });
     dropdownContent.add_child(this._taskListDropdownLabel);
     dropdownContent.add_child(dropdownIcon);
+    this._taskListDropdownIcon = dropdownIcon;
 
     this._taskListDropdownButton = new St.Button({
       style_class: 'google-tasks-dropdown-button',
@@ -300,24 +321,51 @@ export const TasksSection = GObject.registerClass({
       child: dropdownContent,
     });
 
-    this._taskListDropdownMenu = new PopupMenu.PopupMenu(this._taskListDropdownButton, 0.0, St.Side.TOP);
-    // Painted with the notification bubble's color (see _updateBlockStyle())
-    // over a background blur, so it matches the blocks without the task
-    // rows under it showing through.
-    this._dropdownBlurred = this._decorateMenu(this._taskListDropdownMenu);
-    Main.uiGroup.add_child(this._taskListDropdownMenu.actor);
-    this._taskListDropdownMenu.actor.hide();
-    this._taskListDropdownMenuManager = new PopupMenu.PopupMenuManager(this);
-    this._taskListDropdownMenuManager.addMenu(this._taskListDropdownMenu);
+    // A real dropdown: unrolls right under the header button, as wide as it,
+    // painted with the notification tint on a solid base (see
+    // _updateBlockStyle()). The arrow turns over while it's open.
+    dropdownIcon.set_pivot_point(0.5, 0.5);
+    this._listDropdown = new DropdownPanel({
+      anchor: this._taskListDropdownButton,
+      align: 'stretch',
+      styleClass: 'google-tasks-dropdown-panel google-tasks-list-dropdown',
+      onBeforeOpen: () => {
+        this._updateListItemsStyle();
+        this._updateListBlur();
+        this._updateListMenuHeight();
+      },
+      focus: () => this._selectedListItem,
+      onOpenChanged: (open) => {
+        dropdownIcon.remove_all_transitions();
+        // Shell's ease() wants GObject property names (snake_case), which
+        // its typings don't list.
+        const turn: any = { rotation_angle_z: open ? 180 : 0 };
+        dropdownIcon.ease({ ...turn, duration: 180, mode: Clutter.AnimationMode.EASE_OUT_CUBIC });
+        if (open)
+          this._taskListDropdownButton.add_style_pseudo_class('checked');
+        else
+          this._taskListDropdownButton.remove_style_pseudo_class('checked');
+      },
+    });
+    this._dropdownPanels.add(this._listDropdown);
 
-    // One shared manager for every task row's color-picker popup, instead of a
-    // new PopupMenuManager per row per render — creating many short-lived
-    // managers was part of what made the "already disposed" crash happen when
-    // a re-render tore a row down mid-interaction.
-    this._colorMenuManager = new PopupMenu.PopupMenuManager(this);
+    // A long set of lists scrolls instead of growing the dropdown down the
+    // screen.
+    this._taskListBox = new St.BoxLayout({
+      style_class: 'google-tasks-list-dropdown-items',
+      orientation: Clutter.Orientation.VERTICAL,
+    });
+    this._taskListScrollView = new St.ScrollView({
+      style_class: 'google-tasks-list-menu-scroll',
+      hscrollbar_policy: St.PolicyType.NEVER,
+      vscrollbar_policy: St.PolicyType.AUTOMATIC,
+      overlay_scrollbars: true,
+      child: this._taskListBox,
+    });
+    this._listDropdown.content.add_child(this._taskListScrollView);
 
     this._taskListDropdownButton.connect('clicked', () => {
-      this._taskListDropdownMenu.toggle();
+      this._listDropdown.toggle();
       return Clutter.EVENT_STOP;
     });
 
@@ -349,6 +397,9 @@ export const TasksSection = GObject.registerClass({
     });
     box.add_child(this._mainBlock);
     this._mainBlock.add_child(titleBox);
+    // Nothing to pick until setTaskLists() hands over lists: before the
+    // first load, or when loading failed, the picker would unroll empty.
+    this._setListPickerEnabled(false);
 
     this._addTaskForm = new St.BoxLayout({
       style_class: 'google-tasks-add-form',
@@ -508,9 +559,12 @@ export const TasksSection = GObject.registerClass({
 
     this.connect('destroy', () => {
       themeContext.disconnect(this._themeChangedId);
-      this._taskListDropdownMenu.close(BoxPointer.PopupAnimation.NONE);
-      this._taskListDropdownMenuManager.removeMenu(this._taskListDropdownMenu);
-      this._taskListDropdownMenu.destroy();
+      if (this._menusClosedTimerId) {
+        GLib.source_remove(this._menusClosedTimerId);
+        this._menusClosedTimerId = 0;
+      }
+      this._dropdownPanels.delete(this._listDropdown);
+      this._listDropdown.destroy();
     });
   }
 
@@ -519,7 +573,18 @@ export const TasksSection = GObject.registerClass({
   }
 
   hasOpenMenu(): boolean {
-    return this._openMenuCount > 0 || isContextMenuOpen();
+    return this._openMenuCount > 0 || this._menusClosedTimerId !== 0 || isContextMenuOpen();
+  }
+
+  private _flushAfterMenusClose() {
+    if (this._menusClosedTimerId)
+      GLib.source_remove(this._menusClosedTimerId);
+    this._menusClosedTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, DROPDOWN_CLOSE_MS + 20, () => {
+      this._menusClosedTimerId = 0;
+      if (this._openMenuCount === 0)
+        this._onMenusClosed?.();
+      return GLib.SOURCE_REMOVE;
+    });
   }
 
   setOnMenusClosed(callback: (() => void) | null) {
@@ -579,12 +644,98 @@ export const TasksSection = GObject.registerClass({
     this._subtaskRadioSizePx = px;
   }
 
-  setSubtaskLevels(levels: number) {
-    this._subtaskLevels = normalizeSubtaskLevels(levels);
+  setListMenuVisibleLists(count: number) {
+    this._listMenuVisibleLists = count;
+    if (this._listDropdown.isOpen)
+      this._updateListMenuHeight();
   }
 
-  setEmptyStateIcon(iconName: string) {
-    this._emptyStateIcon = iconName;
+  // Caps the scroll view at the height of the first N list items. Measured,
+  // not computed from a fixed row height: item size and spacing come from
+  // the shell theme. Runs on open, when the items are styled.
+  private _updateListMenuHeight() {
+    // Lists and the separators between them.
+    const children = this._taskListBox.get_children();
+    const isItem = (actor: Clutter.Actor) => actor instanceof St.Button;
+    const visible = Math.max(1, Math.round(this._listMenuVisibleLists));
+    if (children.filter(isItem).length <= visible) {
+      this._taskListScrollView.set_style(null);
+      return;
+    }
+
+    const layout = this._taskListBox.get_layout_manager() as Clutter.BoxLayout | null;
+    const spacing = layout?.spacing ?? 0;
+    let height = 0;
+    let items = 0;
+    for (const [index, child] of children.entries()) {
+      if (index > 0)
+        height += spacing;
+      height += child.get_preferred_height(-1)[1];
+      if (isItem(child) && ++items === visible)
+        break;
+    }
+    this._taskListScrollView.set_style(`max-height: ${Math.ceil(height)}px;`);
+  }
+
+  // The list picker is painted in the same layers as the header button it
+  // hangs from, so it reads as the same color: the block's translucent fill
+  // (notification color at the blocks' opacity), and over it the button's
+  // own color at LIST_DROPDOWN_ITEMS_ALPHA, with the button's corners.
+  // Translucent on purpose: the rows under it show through a little.
+  // Read on every open, when the button is on stage and styled.
+  private _updateListItemsStyle() {
+    // Off stage the button has no theme node yet; the next open does it.
+    if (!this._taskListDropdownButton.get_stage())
+      return;
+    let rgb = { r: 0, g: 0, b: 0 };
+    let radius = 8;
+    try {
+      const node = this._taskListDropdownButton.get_theme_node();
+      const color = themeColorToRgba(node.get_background_color() as any);
+      if (color.a > 0)
+        rgb = color;
+      radius = node.get_border_radius(St.Corner.TOPLEFT);
+    }
+    catch (e) {
+      console.warn(`[google-tasks] could not read the list picker's color: ${e}`);
+    }
+    this._listDropdown.content.set_style(buildBlockStyle(this._blockColor, this._blocksOpacityPercent, radius, this._blocksEdgeBlurPx));
+    this._taskListBox.set_style(`background-color: rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${LIST_DROPDOWN_ITEMS_ALPHA}); border-radius: ${radius}px;`);
+  }
+
+  // Blurs what's under the list picker by LIST_DROPDOWN_BLUR_RADIUS_PX (0 =
+  // off). Only here: the picker is translucent anyway, so if the blur doesn't
+  // paint (Shell.BlurEffect BACKGROUND copies the framebuffer, which fails
+  // when the panel is drawn offscreen) it just looks like it does without
+  // one. Popup menus stay opaque, see buildMenuStyle(). The panel's wrapper
+  // never goes offscreen, so the blur holds while it fades in and out too.
+  // Redone on every open, for the current scale factor.
+  private _updateListBlur() {
+    const content = this._listDropdown.content;
+    const existing = content.get_effect(LIST_BLUR_EFFECT_NAME) as Shell.BlurEffect | null;
+    const radius = Math.max(0, LIST_DROPDOWN_BLUR_RADIUS_PX);
+    if (radius === 0) {
+      if (existing)
+        content.remove_effect(existing);
+      return;
+    }
+    try {
+      const scale = St.ThemeContext.get_for_stage((globalThis as any).global.stage).scale_factor;
+      let effect = existing;
+      if (!effect) {
+        effect = new Shell.BlurEffect({ mode: Shell.BlurMode.BACKGROUND, brightness: 1.0 });
+        content.add_effect_with_name(LIST_BLUR_EFFECT_NAME, effect);
+        this._listDropdown.actor.offscreen_redirect = 0 as Clutter.OffscreenRedirect;
+      }
+      effect.radius = radius * scale;
+    }
+    catch (e) {
+      console.warn(`[google-tasks] could not blur the list picker: ${e}`);
+    }
+  }
+
+  setSubtaskLevels(levels: number) {
+    this._subtaskLevels = normalizeSubtaskLevels(levels);
   }
 
   setEmptyStateIconSize(px: number) {
@@ -701,28 +852,83 @@ export const TasksSection = GObject.registerClass({
     if (signature === this._taskListsSignature)
       return;
     this._taskListsSignature = signature;
-    this._taskListDropdownMenu.removeAll();
+    this._taskListBox.destroy_all_children();
+    this._selectedListItem = null;
 
     if (taskLists.length === 0) {
       this._taskListDropdownLabel.set_text(t(this._lang, 'noTaskLists'));
-      this._taskListDropdownButton.reactive = false;
-      this._taskListDropdownMenu.close();
+      this._setListPickerEnabled(false);
       return;
     }
 
-    this._taskListDropdownButton.reactive = true;
+    this._setListPickerEnabled(true);
     const selectedTaskList = taskLists.find(list => list.id === selectedTaskListId) ?? taskLists[0];
     this._taskListDropdownLabel.set_text(selectedTaskList.title);
 
-    for (const list of taskLists) {
-      const dropdownItem = new PopupMenu.PopupMenuItem(list.title);
-      if (list.id === selectedTaskListId)
-        dropdownItem.setOrnament(PopupMenu.Ornament.CHECK);
-      dropdownItem.connect('activate', () => {
-        onSelect(list.id);
+    for (const [index, list] of taskLists.entries()) {
+      if (index > 0) {
+        this._taskListBox.add_child(new St.Widget({
+          style_class: 'google-tasks-list-dropdown-separator',
+          x_expand: true,
+        }));
+      }
+      const selected = list.id === selectedTaskListId;
+      // Title on the left, the current list's check right after it.
+      const label = new St.Label({
+        text: list.title,
+        x_align: Clutter.ActorAlign.START,
+        y_align: Clutter.ActorAlign.CENTER,
       });
-      this._taskListDropdownMenu.addMenuItem(dropdownItem);
+      label.clutter_text.set_ellipsize(3);
+      const check = new St.Icon({
+        icon_name: 'object-select-symbolic',
+        icon_size: 16,
+        style_class: 'google-tasks-list-dropdown-check',
+        y_align: Clutter.ActorAlign.CENTER,
+        visible: selected,
+      });
+      const row = new St.BoxLayout({
+        style_class: 'google-tasks-list-dropdown-row',
+        x_expand: true,
+        x_align: Clutter.ActorAlign.FILL,
+      });
+      row.add_child(label);
+      row.add_child(check);
+
+      const item = new St.Button({
+        style_class: 'google-tasks-list-dropdown-item',
+        can_focus: true,
+        x_expand: true,
+        accessible_name: list.title,
+        child: row,
+      });
+      if (selected) {
+        item.add_style_pseudo_class('checked');
+        this._selectedListItem = item;
+      }
+      item.connect('clicked', () => {
+        this._listDropdown.close();
+        onSelect(list.id);
+        return Clutter.EVENT_STOP;
+      });
+      // Arrow keys move focus past the visible part: keep it in view.
+      item.connect('key-focus-in', () => {
+        ensureActorVisibleInScrollView(this._taskListScrollView, item);
+      });
+      this._taskListBox.add_child(item);
     }
+  }
+
+  // Without lists (still loading, loading failed, none on the account)
+  // there is nothing to pick and nowhere to add a task: the whole block with
+  // the picker is hidden, so the empty state sits centered on its own.
+  private _setListPickerEnabled(enabled: boolean) {
+    this._taskListDropdownButton.reactive = enabled;
+    this._taskListDropdownButton.can_focus = enabled;
+    this._taskListDropdownIcon.visible = enabled;
+    this._mainBlock.visible = enabled;
+    if (!enabled)
+      this._listDropdown.close(false);
   }
 
   private _createTaskRow(
@@ -778,11 +984,16 @@ export const TasksSection = GObject.registerClass({
         box.sync_hover();
     });
 
+    // Colors are specs (see colorSpec.ts): a palette id or '#rrggbb', with
+    // an optional '@opacity'. The swatch and the picker show the color the
+    // row actually has, which for a subtask without a color of its own is
+    // the one inherited from its parent (its opacity included).
     const ownColor = task.id ? this._taskColors.get(task.id) : undefined;
-    // The swatch shows the color the row actually has, which for a subtask
-    // without a color of its own is the one inherited from its parent.
-    const currentColor = ownColor ?? (task.id ? this._effectiveTaskColors.get(task.id) : undefined);
     const effectiveColor = task.id ? this._effectiveTaskColors.get(task.id) : undefined;
+    const ownSpec = ownColor ? parseColorSpec(ownColor, TASK_COLOR_IDS) : null;
+    const effectiveSpec = effectiveColor ? parseColorSpec(effectiveColor, TASK_COLOR_IDS) : null;
+    const parentColor = task.parent ? this._effectiveTaskColors.get(task.parent) : undefined;
+    const inheritedSpec = parentColor ? parseColorSpec(parentColor, TASK_COLOR_IDS) : null;
 
     // The row is the box itself, laid out like any other child of the task
     // list (full width, natural height), with its contents in `content`.
@@ -799,16 +1010,21 @@ export const TasksSection = GObject.registerClass({
     // Own explicit color: full strength. Inherited from the parent task:
     // lighter, so it reads as a grouping hint rather than the task's own
     // setting.
-    const rowHex = effectiveColor && effectiveColor !== 'none' ? TASK_COLOR_HEX[effectiveColor] : undefined;
-    const rowStyle = buildTaskRowStyle({
-      blockSizePx: depth > 0 ? this._subtaskBlockSizePx : this._taskBlockSizePx,
-      cornerRadiusPx: this._cornerRadiusPx,
-      colorHex: rowHex,
-      isOwnColor: currentColor === effectiveColor,
-      base: rowHex ? this._taskColorBase() : undefined,
-      depth,
-    });
-    box.set_style(rowStyle.style);
+    const rowStyleFor = (spec: ColorSpec | null, isOwnColor: boolean): string => {
+      const hex = spec ? colorSpecHex(spec, TASK_COLOR_HEX) : undefined;
+      return buildTaskRowStyle({
+        blockSizePx: depth > 0 ? this._subtaskBlockSizePx : this._taskBlockSizePx,
+        cornerRadiusPx: this._cornerRadiusPx,
+        colorHex: hex,
+        isOwnColor,
+        base: hex ? this._taskColorBase() : undefined,
+        depth,
+        fillAlpha: spec ? this._fillAlphaFor(spec) : undefined,
+      }).style;
+    };
+    const rowHex = effectiveSpec ? colorSpecHex(effectiveSpec, TASK_COLOR_HEX) : undefined;
+    const rowFillAlpha = effectiveSpec ? this._fillAlphaFor(effectiveSpec) : undefined;
+    box.set_style(rowStyleFor(effectiveSpec, ownSpec !== null));
     box.add_child(content);
 
     if (isPending)
@@ -1045,7 +1261,7 @@ export const TasksSection = GObject.registerClass({
       if (options.colored && rowHex) {
         // Same treatment as the row (no one-sided border on a rounded
         // box), a shade lighter so the form reads as part of it.
-        formStyle.push(buildTaskFormStyle(rowHex, this._cornerRadiusPx, this._taskColorBase()));
+        formStyle.push(buildTaskFormStyle(rowHex, this._cornerRadiusPx, this._taskColorBase(), rowFillAlpha));
       }
       form.set_style(`${formStyle.join('; ')};`);
 
@@ -1200,92 +1416,100 @@ export const TasksSection = GObject.registerClass({
     // No else branch: when this row has no children, nothing is added in its
     // place — content shifts left instead of reserving a fixed-width gap.
 
+    const colorDot = new St.Widget({ y_align: Clutter.ActorAlign.CENTER });
+    this._styleColorDot(colorDot, effectiveSpec);
     const colorButton = new St.Button({
       style_class: 'task-color-button',
       can_focus: true,
       y_align: Clutter.ActorAlign.CENTER,
-      child: new St.Widget({
-        style_class: `task-color-dot task-color-dot-${currentColor ?? 'none'}`,
-        y_align: Clutter.ActorAlign.CENTER,
-      }),
+      child: colorDot,
     });
     colorButton.opacity = 0;
 
     if (onColorChange && task.id && !isPending) {
-      // The whole picker — menu actor, manager registration, blur, swatch
-      // items — is built on the first click, not for every row on every
-      // render: most rows' pickers are never opened, and rows get rebuilt
-      // on almost every action.
-      let colorMenu: PopupMenu.PopupMenu | null = null;
-      const ensureColorMenu = (): PopupMenu.PopupMenu => {
-        if (colorMenu)
-          return colorMenu;
-        const menu = new PopupMenu.PopupMenu(colorButton, 0.0, St.Side.TOP);
-        Main.uiGroup.add_child(menu.actor);
-        menu.actor.hide();
-        this._colorMenuManager.addMenu(menu);
+      // The whole picker — dropdown, style, swatches — is built on the first
+      // click, not for every row on every render: most rows' pickers are
+      // never opened, and rows get rebuilt on almost every action.
+      let colorPanel: DropdownPanel | null = null;
+      const ensureColorPanel = (): DropdownPanel => {
+        if (colorPanel)
+          return colorPanel;
 
-        // Styled like the task-list picker — without it the menu was
-        // see-through and the task rows showed through the swatches.
-        const blurred = this._decorateMenu(menu);
-        const style = blurred ? this._menuStyleBlurred : this._menuStyleSolid;
-        if (style)
-          menu.box.set_style(style);
-
-        for (const swatch of TASK_COLOR_PALETTE) {
-          const item = new PopupMenu.PopupBaseMenuItem();
-          const itemBox = new St.BoxLayout({ style_class: 'google-tasks-box' });
-          itemBox.add_child(new St.Widget({
-            style_class: `task-color-dot task-color-dot-${swatch.id}`,
-            y_align: Clutter.ActorAlign.CENTER,
-          }));
-          itemBox.add_child(new St.Label({ text: t(this._lang, `color_${swatch.id}`), y_align: Clutter.ActorAlign.CENTER }));
-          item.add_child(itemBox);
-          item.connect('activate', () => {
-            onColorChange(task, swatch.id);
-          });
-          menu.addMenuItem(item);
-        }
-
-        menu.connect('open-state-changed', (_menu: any, isOpen: boolean) => {
-          colorMenuOpen = isOpen;
-          updateHoverButtons();
-
-          // A re-render destroys this row, and with it the actor the
-          // menu is anchored to — which closed the picker on its own
-          // every refresh tick. The section reports the menu as open
-          // so the render can wait for it.
-          this._openMenuCount += isOpen ? 1 : -1;
-          if (this._openMenuCount < 0)
-            this._openMenuCount = 0;
-          if (!isOpen && this._openMenuCount === 0)
-            this._onMenusClosed?.();
-          return false;
+        // Escape in the picker's entries closes the dropdown built below.
+        let escapeTarget: DropdownPanel | null = null;
+        const picker = new ColorPicker({
+          palette: TASK_COLOR_PALETTE.map(swatch => swatch.id),
+          paletteHex: TASK_COLOR_HEX,
+          strings: {
+            swatches: Object.fromEntries(TASK_COLOR_PALETTE.map(swatch => [swatch.id, t(this._lang, `color_${swatch.id}`)])),
+            custom: t(this._lang, 'colorCustom'),
+            opacity: t(this._lang, 'colorOpacity'),
+            auto: t(this._lang, 'colorOpacityAuto'),
+          },
+          initial: effectiveSpec,
+          defaultOpacity: DEFAULT_TASK_OPACITY_PERCENT,
+          // Previewed on the row itself; saved when the picker closes, so a
+          // dragged slider doesn't rebuild the list on every step. "No
+          // color" on a subtask previews the color it will inherit.
+          onChange: (spec) => {
+            const shown = spec ?? inheritedSpec;
+            box.set_style(rowStyleFor(shown, spec !== null));
+            this._styleColorDot(colorDot, shown);
+          },
+          setupEntry: entry => enableEntryClipboard(entry, { getStrings: () => textStrings(this._lang), onEscape: () => escapeTarget?.close() }),
         });
-        colorMenu = menu;
-        return menu;
+
+        // Opens under the color button with their right edges lined up,
+        // opaque like the task-list picker so the rows never show through.
+        const panel: DropdownPanel = new DropdownPanel({
+          anchor: colorButton,
+          align: 'end',
+          styleClass: 'google-tasks-dropdown-panel',
+          onOpenChanged: (isOpen) => {
+            colorMenuOpen = isOpen;
+            updateHoverButtons();
+
+            // Save before the open-menu count drops: the render this asks for
+            // waits until the count reaches 0, then runs once.
+            if (!isOpen && picker.changed) {
+              picker.changed = false;
+              const spec = picker.spec;
+              onColorChange(task, spec ? formatColorSpec(spec) : 'none');
+            }
+
+            // A re-render destroys this row, and with it the actor the
+            // menu is anchored to — which closed the picker on its own
+            // every refresh tick. The section reports the menu as open
+            // so the render can wait for it.
+            this._openMenuCount += isOpen ? 1 : -1;
+            if (this._openMenuCount < 0)
+              this._openMenuCount = 0;
+            if (!isOpen && this._openMenuCount === 0)
+              this._flushAfterMenusClose();
+          },
+        });
+        escapeTarget = panel;
+        panel.content.add_child(picker.actor);
+        if (this._menuStyle)
+          panel.content.set_style(this._menuStyle);
+        this._dropdownPanels.add(panel);
+        colorPanel = panel;
+        return panel;
       };
 
       colorButton.connect('clicked', () => {
-        ensureColorMenu().toggle();
+        ensureColorPanel().toggle();
         return Clutter.EVENT_STOP;
       });
       box.connect('destroy', () => {
-        if (!colorMenu)
+        if (!colorPanel)
           return;
-        const menu = colorMenu;
-        colorMenu = null;
-        // Close (without animation) before destroying: destroying a menu
-        // while it's mid-open/close animation is what triggered the
-        // "PopupBaseMenuItem has been already disposed" crash when a
-        // re-render tore this row down while the picker was in use.
-        menu.close(BoxPointer.PopupAnimation.NONE);
-        // Detach from the manager first: it installs a grab helper on
-        // colorButton, and dropping the menu without telling it leaves
-        // that behind — the shared _colorMenuManager would accumulate
-        // one stale registration per past render.
-        this._colorMenuManager.removeMenu(menu);
-        menu.destroy();
+        const panel = colorPanel;
+        colorPanel = null;
+        // Closes without animation first (and saves a pending change), then
+        // drops the dropdown: rows are rebuilt on almost every action.
+        this._dropdownPanels.delete(panel);
+        panel.destroy();
       });
       hoverButtons.push(colorButton);
     }
@@ -1422,6 +1646,18 @@ export const TasksSection = GObject.registerClass({
     return box;
   }
 
+  private _fillAlphaFor(spec: ColorSpec): number {
+    return percentToAlpha(colorSpecOpacity(spec));
+  }
+
+  // A color dot (row button, swatch): the palette class, or the custom color
+  // inline.
+  private _styleColorDot(dot: St.Widget, spec: ColorSpec | null) {
+    const custom = spec?.color.startsWith('#') ? spec.color : null;
+    dot.style_class = `task-color-dot task-color-dot-${custom ? 'custom' : spec?.color ?? 'none'}`;
+    dot.set_style(custom ? `background-color: ${custom};` : null);
+  }
+
   // Neutral base the task colors are mixed into: dark under light text,
   // light under dark text, so it follows the shell theme.
   private _taskColorBase(): Rgb {
@@ -1434,27 +1670,6 @@ export const TasksSection = GObject.registerClass({
       console.warn(`[google-tasks] could not read theme foreground color: ${e}`);
     }
     return TASK_COLOR_BASE_DARK;
-  }
-
-  // Gives a popup menu the picker look: the shared class (CSS fallback
-  // until _updateBlockStyle() runs) and a background blur so a translucent
-  // fill doesn't let the task rows show through. Returns whether the blur
-  // could be set up.
-  private _decorateMenu(menu: PopupMenu.PopupMenu): boolean {
-    menu.actor.add_style_class_name('google-tasks-dropdown-menu');
-    try {
-      const scale = St.ThemeContext.get_for_stage((globalThis as any).global.stage).scale_factor;
-      menu.box.add_effect_with_name('google-tasks-dropdown-blur', new Shell.BlurEffect({
-        mode: Shell.BlurMode.BACKGROUND,
-        radius: DROPDOWN_BLUR_RADIUS_PX * scale,
-        brightness: 1.0,
-      }));
-      return true;
-    }
-    catch (e) {
-      console.warn(`[google-tasks] could not blur a popup menu: ${e}`);
-      return false;
-    }
   }
 
   addTask(
@@ -1597,7 +1812,7 @@ export const TasksSection = GObject.registerClass({
     const opacity = Math.round(Math.min(100, Math.max(0, this._emptyStateOpacityPercent)) * 2.55);
 
     const icon = new St.Icon({
-      icon_name: this._emptyStateIcon,
+      icon_name: EMPTY_STATE_ICON,
       icon_size: this._emptyStateIconSizePx,
       style_class: 'google-tasks-empty-state-icon',
       x_align: Clutter.ActorAlign.CENTER,
@@ -1638,8 +1853,8 @@ export const TasksSection = GObject.registerClass({
   // notification-bubble color (read from a hidden `.message` probe), so they
   // follow the theme: opaque themes give solid cards, translucent ones keep
   // the blocks translucent. The blocks' alpha is scaled by the opacity
-  // setting; the picker always uses the bubble's color as is, over a
-  // background blur. Edges are either a 1px outline (edge blur 0) or a soft
+  // setting; the pickers flatten the bubble's tint onto a solid base, so
+  // they are always opaque. Edges are either a 1px outline (edge blur 0) or a soft
   // inner glow of the given width. With blocks turned off, both go back to
   // plain, unpadded boxes; the picker keeps its styling.
   private _updateBlockStyle() {
@@ -1658,13 +1873,17 @@ export const TasksSection = GObject.registerClass({
       }
     }
 
-    // Picker: the bubble's color over a blur of whatever is behind it; if
-    // the blur isn't available, flatten the tint onto a solid base.
+    // Pickers: the bubble's tint flattened onto a solid base (see
+    // buildMenuStyle() for why they never rely on a background blur).
     const color = { r, g, b, a };
-    const menuStyles = buildMenuStyles(color, radius, this._blocksEdgeBlurPx);
-    this._menuStyleBlurred = menuStyles.blurred;
-    this._menuStyleSolid = menuStyles.solid;
-    this._taskListDropdownMenu.box.set_style(this._dropdownBlurred ? this._menuStyleBlurred : this._menuStyleSolid);
+    this._blockColor = color;
+    this._menuStyle = buildMenuStyle(color, radius, this._blocksEdgeBlurPx);
+    for (const panel of this._dropdownPanels) {
+      if (panel === this._listDropdown)
+        this._updateListItemsStyle();
+      else
+        panel.content.set_style(this._menuStyle);
+    }
 
     if (!this._blocksEnabled) {
       this._mainBlock.style_class = '';

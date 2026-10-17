@@ -218,8 +218,8 @@ describe('stylesheet', () => {
     }
   });
 
-  it('the picker menu fallback background is opaque', () => {
-    expect(decl('.google-tasks-dropdown-menu .popup-menu-content', 'background-color')).toMatch(/^#[0-9a-f]{6}$/i);
+  it('the dropdown fallback background is opaque', () => {
+    expect(decl('.google-tasks-dropdown-panel', 'background-color')).toMatch(/^#[0-9a-f]{6}$/i);
   });
 });
 
@@ -313,11 +313,67 @@ describe('settings schema', () => {
 // --- source-level guards ----------------------------------------------------------------
 
 describe('sources', () => {
-  it('every popup menu of the task panel gets the opaque/blurred menu look', () => {
-    const menus = (sectionTs.match(/new PopupMenu\.PopupMenu\(/g) ?? []).length;
-    const decorated = (sectionTs.match(/this\._decorateMenu\(/g) ?? []).length;
-    expect(menus).toBeGreaterThan(0);
-    expect(decorated).toBe(menus);
+  it('the GObject TasksSection keeps field defaults out of its declarations', () => {
+    // GObject's constructor runs _init() from inside super(), and a
+    // declaration initializer only runs after super() returns: _init() would
+    // read undefined ("can't access property 'add', this._dropdownPanels is
+    // undefined") and its writes would be overwritten. Defaults go in _init().
+    const withInitializer = [...sectionTs.matchAll(/^ {2}(?:private |public |protected |readonly )*(\w+)(?:: [^;=!]+)? = /gm)]
+      .map(m => m[1]);
+    expect(withInitializer).toEqual([]);
+  });
+
+  it('every dropdown of the task panel is restyled on theme changes', () => {
+    const panels = (sectionTs.match(/new DropdownPanel\(/g) ?? []).length;
+    const styled = (sectionTs.match(/this\._dropdownPanels\.add\(/g) ?? []).length;
+    expect(panels).toBe(2);
+    expect(styled).toBe(panels);
+  });
+
+  it('opens its pickers as anchored dropdowns, not boxpointer popup menus', () => {
+    // A BoxPointer's arrow margins put the pickers dozens of pixels off
+    // their button.
+    expect(sectionTs).not.toContain('new PopupMenu.PopupMenu(');
+    expect(sectionTs).toContain('align: \'stretch\'');
+    expect(sectionTs).toContain('align: \'end\'');
+  });
+
+  it('without lists the picker block is hidden, not just disabled', () => {
+    expect(sectionTs).toContain('this._mainBlock.visible = enabled;');
+    // ...and so is the column title above it.
+    expect(read('src/extension.ts')).toContain('this._headerLabel.visible = this._taskLists.length > 0;');
+  });
+
+  it('the list picker cannot unroll before it has lists', () => {
+    // Before the first load, or after a failed one, setTaskLists() never ran
+    // and the picker would open as an empty strip.
+    const init = sectionTs.slice(sectionTs.indexOf('  _init() {'), sectionTs.indexOf('\n  }\n', sectionTs.indexOf('  _init() {')));
+    expect(init).toContain('this._setListPickerEnabled(false);');
+  });
+
+  it('dropdowns take their modal grab on their own actor', () => {
+    // A grab delivers pointer events only inside the grabbed actor. The
+    // panels live in Main.uiGroup, so a grab on the section left their
+    // items with no hover and no clicks.
+    const panelTs = read('src/dropdownPanel.ts');
+    expect(panelTs).toContain('Main.pushModal(this.actor,');
+    expect(panelTs).not.toContain('GrabHelper');
+  });
+
+  it('the list picker keeps its lists in the scroll view', () => {
+    expect(sectionTs).toContain('this._taskListBox.add_child(item)');
+    expect(sectionTs).toContain('child: this._taskListBox');
+  });
+
+  it('never makes a menu see-through by relying on a background blur', () => {
+    // A translucent menu over Shell.BlurEffect BACKGROUND let the task rows
+    // show straight through the color picker whenever the blur didn't paint.
+    // Only the list picker, translucent by design, may add one on top.
+    const others = sourceFiles.filter(f => f !== 'tasksSection.ts').map(f => read(`src/${f}`)).join('\n');
+    expect(others).not.toContain('BlurMode.BACKGROUND');
+    expect(sectionTs.match(/BlurMode\.BACKGROUND/g)?.length ?? 0).toBeLessThanOrEqual(1);
+    const blur = sectionTs.match(/private _updateListBlur\(\) \{[\s\S]*?\n {2}\}\n/)?.[0] ?? '';
+    expect(blur).toContain('this._listDropdown.content');
   });
 
   it('never resends a task-creating POST that may already have gone through', () => {

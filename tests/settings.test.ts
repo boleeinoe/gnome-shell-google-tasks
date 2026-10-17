@@ -20,12 +20,12 @@ describe('code fallbacks match the schema defaults', () => {
   const pairs: [string, unknown][] = [
     ['refresh-interval', settings.REFRESH_INTERVAL_SECONDS],
     ['column-width', settings.DEFAULT_COLUMN_WIDTH_PX],
+    ['list-menu-visible-lists', settings.DEFAULT_LIST_MENU_VISIBLE_LISTS],
     ['corner-radius', settings.DEFAULT_TASK_COLOR_CORNER_RADIUS_PX],
     ['title-font-size', settings.DEFAULT_TITLE_FONT_SIZE_PX],
     ['description-font-size', settings.DEFAULT_DESCRIPTION_FONT_SIZE_PX],
     ['task-block-size', settings.DEFAULT_TASK_BLOCK_SIZE_PX],
     ['subtask-block-size', settings.DEFAULT_SUBTASK_BLOCK_SIZE_PX],
-    ['empty-state-icon', settings.DEFAULT_EMPTY_STATE_ICON],
     ['empty-state-icon-size', settings.DEFAULT_EMPTY_STATE_ICON_SIZE_PX],
     ['empty-state-font-size', settings.DEFAULT_EMPTY_STATE_FONT_SIZE_PX],
     ['empty-state-opacity', settings.DEFAULT_EMPTY_STATE_OPACITY_PERCENT],

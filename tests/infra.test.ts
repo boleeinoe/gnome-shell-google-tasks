@@ -143,6 +143,11 @@ describe('local caches', () => {
     expect([...colors]).toEqual([['a', 'green'], ['e', 'red']]);
   });
 
+  it('loads custom colors and explicit opacities, normalized', () => {
+    const colors = parseTaskColors(JSON.stringify({ a: '#5CAE6E', b: 'red@54', c: '#123456@0', d: 'red@140', e: '#12345' }), colorIds);
+    expect([...colors]).toEqual([['a', '#5cae6e'], ['b', 'red@54'], ['c', '#123456@0']]);
+  });
+
   it('loads only finite, positive creation times', () => {
     const times = parseCreationTimes(JSON.stringify({ a: 1700000000000, b: 'x', c: -1, d: null, e: 0 }));
     expect([...times]).toEqual([['a', 1700000000000]]);

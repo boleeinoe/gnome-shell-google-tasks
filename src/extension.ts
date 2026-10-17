@@ -22,9 +22,9 @@ import {
   DEFAULT_COLUMN_WIDTH_PX,
   DEFAULT_DESCRIPTION_FONT_SIZE_PX,
   DEFAULT_EMPTY_STATE_FONT_SIZE_PX,
-  DEFAULT_EMPTY_STATE_ICON,
   DEFAULT_EMPTY_STATE_ICON_SIZE_PX,
   DEFAULT_EMPTY_STATE_OPACITY_PERCENT,
+  DEFAULT_LIST_MENU_VISIBLE_LISTS,
   DEFAULT_SUBTASK_BLOCK_SIZE_PX,
   DEFAULT_TASK_BLOCK_SIZE_PX,
   DEFAULT_TASK_BLOCKS_EDGE_BLUR_PX,
@@ -34,10 +34,10 @@ import {
   DEFAULT_TITLE_FONT_SIZE_PX,
   DESCRIPTION_FONT_SIZE_KEY,
   EMPTY_STATE_FONT_SIZE_KEY,
-  EMPTY_STATE_ICON_KEY,
   EMPTY_STATE_ICON_SIZE_KEY,
   EMPTY_STATE_OPACITY_KEY,
   LANGUAGE_KEY,
+  LIST_MENU_VISIBLE_LISTS_KEY,
   RADIO_SIZE_KEY,
   REFRESH_INTERVAL_KEY,
   REFRESH_INTERVAL_SECONDS,
@@ -205,6 +205,9 @@ export default class GoogleTasksExtension extends Extension {
         text: this._t('headerTitle'),
         style_class: 'google-tasks-header',
         x_align: Clutter.ActorAlign.CENTER,
+        // Shown once there are task lists, like the picker block under it
+        // (see _renderCurrentTaskList()).
+        visible: false,
       });
       setupRichLabel(this._headerLabel, {
         getStrings: () => textStrings(this._getLanguage()),
@@ -278,6 +281,10 @@ export default class GoogleTasksExtension extends Extension {
       this._settingsSignalIds.push(this._settings.connect(`changed::${CORNER_RADIUS_KEY}`, () => {
         this._scheduleRenderOnly();
       }));
+      // The list picker isn't part of the rendered rows: apply straight away.
+      this._settingsSignalIds.push(this._settings.connect(`changed::${LIST_MENU_VISIBLE_LISTS_KEY}`, () => {
+        this._tasksSection?.setListMenuVisibleLists(this._getListMenuVisibleLists());
+      }));
       this._settingsSignalIds.push(this._settings.connect(`changed::${TITLE_FONT_SIZE_KEY}`, () => {
         this._scheduleRenderOnly();
       }));
@@ -291,9 +298,6 @@ export default class GoogleTasksExtension extends Extension {
         this._scheduleRenderOnly();
       }));
       this._settingsSignalIds.push(this._settings.connect(`changed::${RADIO_SIZE_KEY}`, () => {
-        this._scheduleRenderOnly();
-      }));
-      this._settingsSignalIds.push(this._settings.connect(`changed::${EMPTY_STATE_ICON_KEY}`, () => {
         this._scheduleRenderOnly();
       }));
       this._settingsSignalIds.push(this._settings.connect(`changed::${EMPTY_STATE_ICON_SIZE_KEY}`, () => {
@@ -540,6 +544,13 @@ export default class GoogleTasksExtension extends Extension {
     return this._settings.get_int(CORNER_RADIUS_KEY);
   }
 
+  _getListMenuVisibleLists(): number {
+    if (!this._settings)
+      return DEFAULT_LIST_MENU_VISIBLE_LISTS;
+    const value = this._settings.get_int(LIST_MENU_VISIBLE_LISTS_KEY);
+    return value > 0 ? value : DEFAULT_LIST_MENU_VISIBLE_LISTS;
+  }
+
   _getTitleFontSizePx(): number {
     if (!this._settings)
       return DEFAULT_TITLE_FONT_SIZE_PX;
@@ -635,13 +646,6 @@ export default class GoogleTasksExtension extends Extension {
       console.error(`[google-tasks] nesting check failed: ${e}`);
       answer({ id: request.id, status: 'failed', levels, failedLists: [], detail: e instanceof Error ? e.message : String(e) });
     }
-  }
-
-  _getEmptyStateIcon(): string {
-    if (!this._settings)
-      return DEFAULT_EMPTY_STATE_ICON;
-    const value = this._settings.get_string(EMPTY_STATE_ICON_KEY);
-    return value.length > 0 ? value : DEFAULT_EMPTY_STATE_ICON;
   }
 
   _getEmptyStateIconSizePx(): number {
@@ -809,6 +813,12 @@ export default class GoogleTasksExtension extends Extension {
     }
     this._renderDeferred = false;
 
+    // Without lists (none on the account; loading or a failed load never
+    // gets here with any) the column shows only the empty state, centered:
+    // the title goes with the picker block, which the section hides.
+    if (this._headerLabel)
+      this._headerLabel.visible = this._taskLists.length > 0;
+
     if (this._taskLists.length === 0) {
       if (this._alreadyRendered('no-lists'))
         return;
@@ -835,7 +845,7 @@ export default class GoogleTasksExtension extends Extension {
     this._tasksSection.setRadioSize(this._getRadioSizePx());
     this._tasksSection.setSubtaskRadioSize(this._getSubtaskRadioSizePx());
     this._tasksSection.setSubtaskLevels(this._getSubtaskLevels());
-    this._tasksSection.setEmptyStateIcon(this._getEmptyStateIcon());
+    this._tasksSection.setListMenuVisibleLists(this._getListMenuVisibleLists());
     this._tasksSection.setEmptyStateIconSize(this._getEmptyStateIconSizePx());
     this._tasksSection.setEmptyStateFontSize(this._getEmptyStateFontSizePx());
     this._tasksSection.setEmptyStateOpacity(this._getEmptyStateOpacityPercent());
@@ -1158,7 +1168,6 @@ export default class GoogleTasksExtension extends Extension {
       this._getRadioSizePx(),
       this._getSubtaskRadioSizePx(),
       this._getSubtaskLevels(),
-      this._getEmptyStateIcon(),
       this._getEmptyStateIconSizePx(),
       this._getEmptyStateFontSizePx(),
       this._getEmptyStateOpacityPercent(),
@@ -1168,7 +1177,6 @@ export default class GoogleTasksExtension extends Extension {
   _applyEmptyStateSettings() {
     if (!this._tasksSection)
       return;
-    this._tasksSection.setEmptyStateIcon(this._getEmptyStateIcon());
     this._tasksSection.setEmptyStateIconSize(this._getEmptyStateIconSizePx());
     this._tasksSection.setEmptyStateFontSize(this._getEmptyStateFontSizePx());
     this._tasksSection.setEmptyStateOpacity(this._getEmptyStateOpacityPercent());

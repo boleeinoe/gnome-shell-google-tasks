@@ -4,12 +4,13 @@ import {
   BLOCK_HEADING_ICON_SIZE_PX,
   blockHeadingFontSizePx,
   buildBlockStyle,
-  buildMenuStyles,
+  buildMenuStyle,
   buildTaskFormStyle,
   buildTaskRowStyle,
   DEFAULT_RADIO_SIZE_PX,
   DEFAULT_SUBTASK_RADIO_SIZE_PX,
   parseHex,
+  percentToAlpha,
   pickTaskColorBase,
   SUBTASK_INDENT_PX,
   subtaskIndentPx,
@@ -143,6 +144,21 @@ describe('buildTaskRowStyle', () => {
     expect(plain.style).not.toContain('border-radius');
   });
 
+  it('uses the configured fill alpha for own and inherited colors', () => {
+    for (const isOwnColor of [true, false]) {
+      const style = buildTaskRowStyle({ blockSizePx: 4, cornerRadiusPx: 6, colorHex: TASK_COLOR_HEX.green, isOwnColor, fillAlpha: 0.5 }).style;
+      expect(rgbaOf(style).a).toBe(0.5);
+    }
+    expect(rgbaOf(colored.style).a).toBe(TASK_COLOR_FILL_ALPHA);
+  });
+
+  it('clamps the fill alpha to 0-1', () => {
+    const at = (fillAlpha: number) => rgbaOf(buildTaskRowStyle({ blockSizePx: 4, cornerRadiusPx: 6, colorHex: TASK_COLOR_HEX.red, fillAlpha }).style).a;
+    expect(at(2)).toBe(1);
+    expect(at(-1)).toBe(0);
+    expect(percentToAlpha(150)).toBe(1);
+  });
+
   it('applies the block size as vertical padding', () => {
     expect(buildTaskRowStyle({ blockSizePx: 7, cornerRadiusPx: 6 }).style).toContain('padding-top: 7px; padding-bottom: 7px');
   });
@@ -155,28 +171,35 @@ describe('buildTaskFormStyle', () => {
     expect(style).toContain('border: none');
     expect(style).toContain('background-color');
   });
+
+  it('uses the configured fill alpha', () => {
+    expect(rgbaOf(buildTaskFormStyle(TASK_COLOR_HEX.blue, 6, TASK_COLOR_BASE_DARK, 0.3)).a).toBe(0.3);
+  });
 });
 
-describe('buildMenuStyles', () => {
+describe('buildMenuStyle', () => {
   const notification = { r: 255, g: 255, b: 255, a: 0.08 };
 
-  it('the solid variant is opaque, so nothing shows through the menu', () => {
-    const { solid } = buildMenuStyles(notification, 12, 8);
-    expect(solid).toMatch(/background-color: rgb\(\d+, \d+, \d+\)/);
+  it('is opaque even for a translucent notification color, so nothing shows through', () => {
+    const style = buildMenuStyle(notification, 12, 8);
+    expect(style).toMatch(/background-color: rgb\(\d+, \d+, \d+\)/);
+    expect(style).not.toMatch(/background-color: rgba/);
   });
 
-  it('the blurred variant keeps the notification alpha', () => {
-    expect(buildMenuStyles(notification, 12, 8).blurred).toContain('rgba(255, 255, 255, 0.080)');
+  it('carries the notification tint on its solid base', () => {
+    const tinted = rgbaOf(buildMenuStyle(notification, 12, 8));
+    const untinted = rgbaOf(buildMenuStyle({ ...notification, a: 0 }, 12, 8));
+    expect(tinted.r).toBeGreaterThan(untinted.r);
   });
 
   it('caps the corner radius at 8px', () => {
-    expect(buildMenuStyles(notification, 16, 8).solid).toContain('border-radius: 8px');
-    expect(buildMenuStyles(notification, 4, 8).solid).toContain('border-radius: 4px');
+    expect(buildMenuStyle(notification, 16, 8)).toContain('border-radius: 8px');
+    expect(buildMenuStyle(notification, 4, 8)).toContain('border-radius: 4px');
   });
 
   it('uses a soft inset edge, or a 1px outline when the edge blur is 0', () => {
-    expect(buildMenuStyles(notification, 12, 8).solid).toContain('box-shadow: inset 0 0 8px');
-    expect(buildMenuStyles(notification, 12, 0).solid).toContain('border: 1px solid');
+    expect(buildMenuStyle(notification, 12, 8)).toContain('box-shadow: inset 0 0 8px');
+    expect(buildMenuStyle(notification, 12, 0)).toContain('border: 1px solid');
   });
 });
 

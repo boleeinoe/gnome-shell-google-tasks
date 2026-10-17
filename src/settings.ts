@@ -20,12 +20,13 @@ export const DEFAULT_TITLE_FONT_SIZE_PX = 14;
 export const DEFAULT_DESCRIPTION_FONT_SIZE_PX = 11;
 export const DEFAULT_TASK_BLOCK_SIZE_PX = 4;
 export const DEFAULT_SUBTASK_BLOCK_SIZE_PX = 4;
-export const DEFAULT_EMPTY_STATE_ICON = 'view-list-symbolic';
 export const DEFAULT_EMPTY_STATE_ICON_SIZE_PX = 64;
 export const DEFAULT_EMPTY_STATE_FONT_SIZE_PX = 14;
 export const DEFAULT_EMPTY_STATE_OPACITY_PERCENT = 50;
 
 export const DEFAULT_COLUMN_WIDTH_PX = 520;
+// How many task lists the list picker shows before it starts scrolling.
+export const DEFAULT_LIST_MENU_VISIBLE_LISTS = 8;
 export const REFRESH_INTERVAL_KEY = 'refresh-interval';
 export const TASK_SORT_ORDER_KEY = 'task-sort-order';
 export const SHOW_COMPLETED_TASKS_KEY = 'show-completed-tasks';
@@ -33,6 +34,7 @@ export const SHOW_TASK_DATE_KEY = 'show-task-date';
 export const TASK_TIMEFRAME_KEY = 'task-timeframe';
 export const LANGUAGE_KEY = 'language';
 export const COLUMN_WIDTH_KEY = 'column-width';
+export const LIST_MENU_VISIBLE_LISTS_KEY = 'list-menu-visible-lists';
 export const CORNER_RADIUS_KEY = 'corner-radius';
 export const COMPLETED_RETENTION_MINUTES_KEY = 'completed-retention-minutes';
 export const TITLE_FONT_SIZE_KEY = 'title-font-size';
@@ -47,7 +49,6 @@ export const SUBTASK_LEVELS_KEY = 'subtask-levels';
 // the extension answers in the result key.
 export const SUBTASK_LEVELS_REQUEST_KEY = 'subtask-levels-request';
 export const SUBTASK_LEVELS_RESULT_KEY = 'subtask-levels-result';
-export const EMPTY_STATE_ICON_KEY = 'empty-state-icon';
 export const EMPTY_STATE_ICON_SIZE_KEY = 'empty-state-icon-size';
 export const EMPTY_STATE_FONT_SIZE_KEY = 'empty-state-font-size';
 export const EMPTY_STATE_OPACITY_KEY = 'empty-state-opacity';

@@ -159,6 +159,7 @@
 
 .google-tasks-dropdown-button:hover,
 .google-tasks-dropdown-button:focus,
+.google-tasks-dropdown-button:checked,
 .tasks-completed-toggle:hover,
 .tasks-completed-toggle:focus {
     background-color: rgba(128, 128, 128, 0.3);
@@ -177,12 +178,43 @@
     opacity: 0.7;
 }
 
-/* Task-list picker. Background, edge and radius are set inline from the
-   notification bubble's color at runtime (over a background blur), see
-   _updateBlockStyle(); these are only the fallback until that runs. */
-.google-tasks-dropdown-menu .popup-menu-content {
+/* Dropdowns (task-list picker, color pickers): an opaque fallback until
+   _updateBlockStyle() paints them with the notification tint. */
+.google-tasks-dropdown-panel {
     background-color: #222222;
     border-radius: 8px;
+    padding: 4px;
+}
+
+/* The list picker has the header button's look instead (set inline on
+   open, see _updateListItemsStyle()): no frame around the lists. */
+.google-tasks-dropdown-panel.google-tasks-list-dropdown {
+    padding: 0;
+}
+
+.google-tasks-list-dropdown-items {
+    border-radius: 8px;
+}
+
+.google-tasks-list-dropdown-item {
+    padding: 6px 8px;
+    border-radius: 6px;
+    text-align: left;
+}
+
+.google-tasks-list-dropdown-separator {
+    height: 1px;
+    margin: 0 8px;
+    background-color: rgba(128, 128, 128, 0.3);
+}
+
+.google-tasks-list-dropdown-item:hover,
+.google-tasks-list-dropdown-item:focus {
+    background-color: rgba(128, 128, 128, 0.3);
+}
+
+.google-tasks-list-dropdown-row {
+    spacing: 8px;
 }
 
 .tasks-completed-list {
@@ -346,6 +378,97 @@
     background-color: #9b6fd0;
 }
 
+/* --- Color picker (a row's color popup) --------------------------------
+   Presets, then the custom editor (saturation/value field, hue strip, HEX),
+   then opacity (slider and 0-100 entry). See colorPicker.ts. */
+
+.google-tasks-color-picker {
+    padding: 8px 12px;
+    spacing: 12px;
+    min-width: 224px;
+}
+
+.google-tasks-color-swatches,
+.google-tasks-color-row {
+    spacing: 4px;
+}
+
+.google-tasks-color-editor,
+.google-tasks-color-opacity {
+    spacing: 8px;
+}
+
+.google-tasks-color-swatch {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border-radius: 99px;
+    border: 2px solid transparent;
+}
+
+.google-tasks-color-swatch:hover,
+.google-tasks-color-swatch:focus {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.google-tasks-color-swatch:checked {
+    border-color: rgba(255, 255, 255, 0.85);
+}
+
+.google-tasks-color-swatch .task-color-dot {
+    width: 14px;
+    height: 14px;
+}
+
+/* The field and the strip are painted with Cairo inside the border, so a
+   focused one shows a ring without covering any color. */
+.google-tasks-color-field,
+.google-tasks-color-hue {
+    border: 2px solid transparent;
+}
+
+.google-tasks-color-field:focus,
+.google-tasks-color-hue:focus {
+    border-color: rgba(255, 255, 255, 0.85);
+}
+
+.google-tasks-color-field {
+    height: 128px;
+}
+
+.google-tasks-color-hue {
+    height: 12px;
+}
+
+.google-tasks-color-caption {
+    font-size: 12px;
+}
+
+.google-tasks-color-entry {
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+}
+
+.google-tasks-color-percent {
+    width: 48px;
+}
+
+.google-tasks-color-auto {
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+}
+
+.google-tasks-color-auto:hover,
+.google-tasks-color-auto:focus {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.google-tasks-color-auto:checked {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
 /* --- Copy/paste, selection and links ------------------------------------ */
 
 /* The action buttons and the timestamp share one strip at the end of a row,
@@ -410,6 +533,7 @@
 
 .google-tasks-block .google-tasks-dropdown-button:hover,
 .google-tasks-block .google-tasks-dropdown-button:focus,
+.google-tasks-block .google-tasks-dropdown-button:checked,
 .google-tasks-block .tasks-completed-toggle:hover,
 .google-tasks-block .tasks-completed-toggle:focus {
     background-color: rgba(0, 0, 0, 0.26);

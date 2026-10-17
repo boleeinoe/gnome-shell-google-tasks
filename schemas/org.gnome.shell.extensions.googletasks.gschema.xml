@@ -58,6 +58,12 @@
       <summary>Column width</summary>
       <description>Width in pixels of the Google Tasks column in the calendar popup.</description>
     </key>
+    <key name="list-menu-visible-lists" type="i">
+      <default>8</default>
+      <range min="1" max="30"/>
+      <summary>Visible task lists</summary>
+      <description>How many task lists the task-list picker menu shows before it starts scrolling.</description>
+    </key>
     <key name="corner-radius" type="i">
       <default>6</default>
       <range min="0" max="24"/>
@@ -121,11 +127,6 @@
       <default>''</default>
       <summary>Result of a nesting-levels request (internal)</summary>
       <description>Written by the extension in answer to subtask-levels-request: JSON saying whether the new limit was applied, and if not, which tasks are nested too deep.</description>
-    </key>
-    <key name="empty-state-icon" type="s">
-      <default>'view-list-symbolic'</default>
-      <summary>Empty state icon</summary>
-      <description>Symbolic icon name shown above the "no tasks" placeholder message.</description>
     </key>
     <key name="empty-state-icon-size" type="i">
       <default>64</default>

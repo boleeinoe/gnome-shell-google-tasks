@@ -19,10 +19,10 @@ import {
   CORNER_RADIUS_KEY,
   DESCRIPTION_FONT_SIZE_KEY,
   EMPTY_STATE_FONT_SIZE_KEY,
-  EMPTY_STATE_ICON_KEY,
   EMPTY_STATE_ICON_SIZE_KEY,
   EMPTY_STATE_OPACITY_KEY,
   LANGUAGE_KEY,
+  LIST_MENU_VISIBLE_LISTS_KEY,
   RADIO_SIZE_KEY,
   REFRESH_INTERVAL_KEY,
   SHOW_COMPLETED_TASKS_KEY,
@@ -261,11 +261,26 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     });
     settings.bind(TASK_BLOCKS_EDGE_BLUR_KEY, taskBlocksEdgeBlurRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
+    const listMenuVisibleListsRow = new Adw.SpinRow({
+      title: s('listMenuVisibleLists'),
+      subtitle: s('listMenuVisibleListsHint'),
+      adjustment: new Gtk.Adjustment({
+        lower: 1,
+        upper: 30,
+        step_increment: 1,
+        page_increment: 5,
+      }),
+      digits: 0,
+      numeric: true,
+    });
+    settings.bind(LIST_MENU_VISIBLE_LISTS_KEY, listMenuVisibleListsRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+
     appearanceGroup.add(columnWidthRow);
     appearanceGroup.add(cornerRadiusRow);
     appearanceGroup.add(taskBlocksRow);
     appearanceGroup.add(taskBlocksOpacityRow);
     appearanceGroup.add(taskBlocksEdgeBlurRow);
+    appearanceGroup.add(listMenuVisibleListsRow);
     page.add(appearanceGroup);
 
     const typographyGroup = new Adw.PreferencesGroup({
@@ -372,11 +387,6 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
       description: s('groupEmptyStateHint'),
     });
 
-    const emptyStateIconRow = new Adw.EntryRow({
-      title: s('emptyStateIcon'),
-    });
-    settings.bind(EMPTY_STATE_ICON_KEY, emptyStateIconRow, 'text', Gio.SettingsBindFlags.DEFAULT);
-
     const emptyStateIconSizeRow = new Adw.SpinRow({
       title: s('emptyStateIconSize'),
       subtitle: s('emptyStateIconSizeHint'),
@@ -419,7 +429,6 @@ export default class GoogleTasksPreferences extends ExtensionPreferences {
     });
     settings.bind(EMPTY_STATE_OPACITY_KEY, emptyStateOpacityRow, 'value', Gio.SettingsBindFlags.DEFAULT);
 
-    emptyStateGroup.add(emptyStateIconRow);
     emptyStateGroup.add(emptyStateIconSizeRow);
     emptyStateGroup.add(emptyStateFontSizeRow);
     emptyStateGroup.add(emptyStateOpacityRow);

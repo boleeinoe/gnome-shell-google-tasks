@@ -50,10 +50,17 @@ export function subtaskIndentPx(depth: number): number {
   return Math.max(0, Math.round(depth)) * SUBTASK_INDENT_PX;
 }
 
-// Popup menus (task-list picker, color pickers): solid fallback base for when
-// a background blur isn't available, and the cap on their corner radius.
+// Popup menus (task-list picker, color pickers): the solid base the
+// notification tint is flattened onto, and the cap on their corner radius.
 export const MENU_FALLBACK_BASE: Rgb = { r: 34, g: 34, b: 34 };
 export const MENU_MAX_RADIUS_PX = 8;
+// Task-list picker: over the block's fill, the lists get the header
+// button's color with this alpha (0 = none, 1 = solid). Edit to taste.
+export const LIST_DROPDOWN_ITEMS_ALPHA = 0.5;
+// Task-list picker: how strongly what's under it is blurred, as the blur
+// radius in logical pixels (0 = no blur, the rows just show through the
+// translucent fill). Edit to taste.
+export const LIST_DROPDOWN_BLUR_RADIUS_PX = 80;
 // Extra alpha for the blocks' and menus' edge over their fill.
 export const BLOCK_BORDER_ALPHA_EXTRA = 0.06;
 
@@ -83,6 +90,15 @@ export function taskColorFill(hex: string, mix: number, base: Rgb, alpha: number
   return { ...mixRgb(parseHex(hex), base, mix), a: alpha };
 }
 
+// A 0-100 opacity setting as a 0-1 fill alpha.
+export function percentToAlpha(percent: number): number {
+  return clampAlpha(percent / 100);
+}
+
+function clampAlpha(alpha: number): number {
+  return Number.isFinite(alpha) ? Math.max(0, Math.min(1, alpha)) : TASK_COLOR_FILL_ALPHA;
+}
+
 export function rgbaCss({ r, g, b, a }: Rgba): string {
   return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
@@ -105,6 +121,9 @@ export interface TaskRowStyleOptions {
   base?: Rgb;
   // Nesting level: 0 for a task, 1 for a subtask, 2 for a sub-subtask.
   depth?: number;
+  // Alpha of the color fill (0-1): the task's own opacity, or the default
+  // above its block (see colorSpec.ts).
+  fillAlpha?: number;
 }
 
 export interface TaskRowStyle {
@@ -130,7 +149,7 @@ export function buildTaskRowStyle(options: TaskRowStyleOptions): TaskRowStyle {
       options.colorHex,
       own ? TASK_COLOR_MIX_OWN : TASK_COLOR_MIX_INHERITED,
       options.base ?? TASK_COLOR_BASE_DARK,
-      TASK_COLOR_FILL_ALPHA,
+      clampAlpha(options.fillAlpha ?? TASK_COLOR_FILL_ALPHA),
     );
     parts.push(`background-color: ${rgbaCss(fill)}`);
     parts.push('border: none');
@@ -141,8 +160,13 @@ export function buildTaskRowStyle(options: TaskRowStyleOptions): TaskRowStyle {
 
 // Inline edit/add-subtask form under a colored row: same treatment as the
 // row, a shade lighter so it reads as part of it.
-export function buildTaskFormStyle(colorHex: string, cornerRadiusPx: number, base: Rgb = TASK_COLOR_BASE_DARK): string {
-  const fill = taskColorFill(colorHex, TASK_COLOR_FORM_MIX, base, TASK_COLOR_FILL_ALPHA);
+export function buildTaskFormStyle(
+  colorHex: string,
+  cornerRadiusPx: number,
+  base: Rgb = TASK_COLOR_BASE_DARK,
+  fillAlpha: number = TASK_COLOR_FILL_ALPHA,
+): string {
+  const fill = taskColorFill(colorHex, TASK_COLOR_FORM_MIX, base, clampAlpha(fillAlpha));
   return [
     `border-radius: ${cornerRadiusPx}px`,
     'border: none',
@@ -160,25 +184,20 @@ export function edgeStyle(color: Rgb, alpha: number, edgeBlurPx: number): string
     : [`border: 1px solid ${rgba}`];
 }
 
-export interface MenuStyles {
-  // For a menu with a background blur: the notification color as is.
-  blurred: string;
-  // Without the blur: the notification tint flattened onto a solid base, so
-  // nothing behind the menu shows through.
-  solid: string;
-}
-
-export function buildMenuStyles(color: Rgba, radiusPx: number, edgeBlurPx: number): MenuStyles {
-  const style = (fill: string) => `${[
-    `background-color: ${fill}`,
+// A popup menu: the notification tint flattened onto a solid base, so it is
+// always opaque. Never the translucent notification color over a background
+// blur: Shell.BlurEffect in BACKGROUND mode copies whatever is already drawn
+// in the current framebuffer, and when that copy doesn't happen (its buffers
+// can't be set up, or the menu is drawn to an offscreen buffer) it paints the
+// menu alone — leaving an ~8% tint, with the task rows showing straight
+// through the color picker.
+export function buildMenuStyle(color: Rgba, radiusPx: number, edgeBlurPx: number): string {
+  const solid = mixRgb(color, MENU_FALLBACK_BASE, color.a);
+  return `${[
+    `background-color: rgb(${solid.r}, ${solid.g}, ${solid.b})`,
     ...edgeStyle(color, color.a, edgeBlurPx),
     `border-radius: ${Math.min(radiusPx, MENU_MAX_RADIUS_PX)}px`,
   ].join('; ')};`;
-  const solid = mixRgb(color, MENU_FALLBACK_BASE, color.a);
-  return {
-    blurred: style(`rgba(${color.r}, ${color.g}, ${color.b}, ${color.a.toFixed(3)})`),
-    solid: style(`rgb(${solid.r}, ${solid.g}, ${solid.b})`),
-  };
 }
 
 // The "my tasks" / "completed" blocks: the notification color with its alpha
